@@ -92,3 +92,5 @@ doc/_build
 doc/api
 .vscode
 test.ipynb
+
+.repoai/
