@@ -202,6 +202,11 @@ GHPT:
   status: ["operating", "retired", "construction"]
   fn: Global-Hydropower-Tracker-April-2024.xlsx
   url: https://tubcloud.tu-berlin.de/s/sEztyBLdJS5sNHY/download/Global-Hydropower-Tracker-April-2024.xlsx
+OSM:
+  fn: "osm_powerplants.csv"
+  aggregated_units: false
+  net_capacity: true
+  reliability_score: 3
 # ---------------------------------------------------------------------------- #
 #                             Data Structure Config                            #
 # ---------------------------------------------------------------------------- #
