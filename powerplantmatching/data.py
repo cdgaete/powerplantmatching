@@ -44,6 +44,7 @@ from .utils import (
     get_raw_file,
     set_column_name,
 )
+from .osm_power.src.extract import PowerDataExtractor
 
 logger = logging.getLogger(__name__)
 cget = pycountry.countries.get
@@ -2141,6 +2142,102 @@ def GEM(raw=False, update=False, config=None):
     GEMS_FUNTIONS = [GBPT, GGPT, GCPT, GGTPT, GNPT, GSPT, GWPT, GHPT]
     data = [f(raw=raw, update=update, config=config) for f in GEMS_FUNTIONS]
     return pd.concat(data, ignore_index=True)
+
+def OSM(raw=False, update=False, config=None):
+    """
+    Importer for the OpenStreetMap power plant data.
+    
+    Parameters
+    ----------
+    raw : boolean, default False
+        Whether to return the original dataset
+    update: bool, default False
+        Whether to update the data from the url.
+    config : dict, default None
+        Add custom specific configuration,
+        e.g. powerplantmatching.config.get_config(target_countries='Italy'),
+        defaults to powerplantmatching.config.get_config()
+        
+    Returns
+    -------
+    pd.DataFrame
+        Power plant data from OpenStreetMap formatted according to 
+        powerplantmatching standards
+    """
+    
+    if config is None:
+        config = get_config()
+
+    # Get target countries from config
+    countries = config['target_countries']
+    
+    # Initialize extractor and get data for all target countries
+    extractor = PowerDataExtractor()
+    osm_df = extractor.extract_data(countries)
+    
+    if raw:
+        return osm_df
+        
+    # Map OSM generator:source/plant:source to powerplantmatching fueltypes
+    fueltype_map = {
+        'nuclear': 'Nuclear',
+        'coal': 'Hard Coal',
+        'lignite': 'Lignite',
+        'gas': 'Natural Gas', 
+        'oil': 'Oil',
+        'biomass': 'Solid Biomass',
+        'wood': 'Solid Biomass',
+        'hydro': 'Hydro',
+        'wind': 'Wind',
+        'solar': 'Solar',
+        'geothermal': 'Geothermal',
+        'waste': 'Waste',
+        'biogas': 'Biogas',
+        'diesel': 'Oil',
+        'coal;gas': 'Hard Coal',
+        'gas;coal': 'Natural Gas',
+        'gas;diesel': 'Natural Gas',
+        'diesel;gas': 'Oil'
+    }
+    
+    # Map OSM method/technology to powerplantmatching technologies
+    technology_map = {
+        'wind_turbine': 'Onshore',
+        'water-storage': 'Reservoir',
+        'run-of-river': 'Run-Of-River',
+        'water-pumped-storage': 'Pumped Storage',
+        'combustion': 'Steam Turbine',
+        'combined_cycle': 'CCGT',
+        'steam_turbine': 'Steam Turbine',
+        'gas_turbine': 'OCGT',
+        'photovoltaic': 'PV',
+        'concentrated_solar': 'CSP'
+    }
+    
+    # Create new DataFrame with powerplantmatching format
+    df = pd.DataFrame({
+        'Name': osm_df.id.astype(str),
+        'projectID': "OSM-" + osm_df.id.astype(str),
+        'Fueltype': osm_df['generator:source'].fillna(osm_df['plant:source']).map(fueltype_map),
+        'Technology': osm_df['generator:method'].fillna(osm_df['plant:method']).map(technology_map),
+        'Set': np.nan,
+        'Country': osm_df.country_code,
+        'Capacity': osm_df['generator:output:electricity_value'].fillna(
+                        osm_df['plant:output:electricity_value']),
+        'lat': osm_df.lat,
+        'lon': osm_df.lon,
+        # Add empty columns required by powerplantmatching
+        'Efficiency': np.nan,
+        'DateIn': np.nan,
+        'DateRetrofit': np.nan,
+        'DateOut': np.nan,
+        'Duration': np.nan,
+        'Volume_Mm3': np.nan,
+        'DamHeight_m': np.nan,
+        'StorageCapacity_MWh': np.nan
+    })
+    
+    return df
 
 
 # deprecated alias for GGPT

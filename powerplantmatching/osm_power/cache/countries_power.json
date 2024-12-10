@@ -1,0 +1,67 @@
+// this is a sample only
+{
+  "timestamp": "2024-12-05T10:32:16.470945",
+  "data": {
+    "LU": {
+      "version": 0.6,
+      "generator": "Overpass API 0.7.62.4 2390de5a",
+      "osm3s": {
+        "timestamp_osm_base": "2024-12-05T13:31:17Z",
+        "timestamp_areas_base": "2024-12-05T10:35:13Z",
+        "copyright": "The data included in this document is from www.openstreetmap.org. The data is made available under ODbL."
+      },
+      "elements": [
+        {
+          "type": "node",
+          "id": 279330406,
+          "lat": 49.9405682,
+          "lon": 6.1178687,
+          "tags": {
+            "generator:method": "wind_turbine",
+            "generator:output:electricity": "2350 kW",
+            "generator:source": "wind",
+            "generator:type": "horizontal_axis",
+            "height:hub": "138",
+            "manufacturer": "Enercon",
+            "model": "E-92/2.3MW",
+            "power": "generator",
+            "rotor:diameter": "92"
+          }
+        },
+        {
+          "type": "relation",
+          "id": 6750291,
+          "members": [
+            {
+              "type": "way",
+              "ref": 456704106,
+              "role": "outer"
+            },
+            {
+              "type": "way",
+              "ref": 31452020,
+              "role": "outer"
+            },
+            {
+              "type": "way",
+              "ref": 458312802,
+              "role": "outer"
+            }
+          ],
+          "tags": {
+            "name": "Centrale de Vianden",
+            "operator": "Soci\u00e9t\u00e9 \u00c9lectrique de l'Our",
+            "operator:wikidata": "Q13105066",
+            "plant:method": "water-pumped-storage",
+            "plant:output:electricity": "1290 MW",
+            "plant:source": "hydro",
+            "power": "plant",
+            "type": "multipolygon",
+            "wikidata": "Q328955",
+            "wikipedia": "fr:Centrale de Vianden"
+          }
+        }
+      ]
+    }
+  }
+}
