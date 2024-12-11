@@ -1,254 +1,354 @@
-import yaml
-import json
+from typing import Dict, List, Optional, Any
+from dataclasses import dataclass
 import pandas as pd
 from pathlib import Path
-from typing import Dict, List, Optional
-import re
-from datetime import datetime
-from shapely.geometry import Polygon
-import pyproj
-import hdbscan
+import inspect
+import yaml
+import numpy as np
+from sklearn.cluster import DBSCAN, KMeans
+from hdbscan import HDBSCAN
 from .api import OverpassAPI
-from .utils import parse_date
+from .utils import parse_date, calculate_area
+import re
 
-class PowerDataExtractor:
-    def __init__(self, api_url: Optional[str] = None):
-        self.config_dir = Path(__file__).parent.parent / "config"
-        self.api = OverpassAPI(api_url=api_url)
+@dataclass
+class PowerSource:
+    """Configuration for a power source type"""
+    type: str
+    tags: List[str]
+    capacity_keys: List[str]
+    clustering: Optional[Dict] = None
+    estimation: Optional[Dict] = None
 
-        # Load configuration
-        self.config = self._load_config()
+class PowerPlantExtractor:
+    """Main class for extracting power plant data"""
+
+    def __init__(self, config_dir: Optional[Path] = None, custom_config: Optional[Dict[str, Any]] = None):
+        self.config_dir = config_dir or Path(__file__).parent.parent / "config"
+        self.api = OverpassAPI()
+        self.load_configurations(custom_config=custom_config)
+        self.generators_omitted = []
+        self.relations_omitted = []
+        self.plants_omitted = []
+
+    def load_configurations(self, custom_config: Optional[Dict[str, Any]] = None):
+        """Load all configuration files"""
+        if custom_config:
+            self.sources = {
+                name: PowerSource(**config)
+                for name, config in custom_config["sources"].items()
+            }
+        else:
+            # Load source configurations
+            with open(self.config_dir / "sources.yaml") as f:
+                self.sources = {
+                    name: PowerSource(**config)
+                    for name, config in yaml.safe_load(f).items()
+                }
+
+    def _get_plant_capacity(self, element: Dict, ways_data: Optional[Dict] = None) -> Optional[float]:
+        """
+        Extract and normalize capacity value from a plant element.
         
-        # Initialize unit conversion patterns
-        self.unit_patterns = {
-            'power': re.compile(r'^(-?\d+\.?\d*)\s*([kKMGT]?[Ww]|MW|GW)$'),
-            'length': re.compile(r'^(-?\d+\.?\d*)\s*([mk]m)$'),
-            'area': re.compile(r'^(-?\d+\.?\d*)\s*([mk]m²)$'),
-        }
-        
-        # Initialize unit conversion factors (to kW, m, m²)
-        self.power_conversion = {
-            'W': 0.001,
-            'kW': 1,
-            'MW': 1000,
-            'GW': 1000000,
-        }
-        
-        self.length_conversion = {
-            'm': 1,
-            'km': 1000,
-        }
-
-    def _load_config(self) -> Dict:
-        """Load the configuration from current.yaml."""
-        try:
-            with open(self.config_dir / "keys" / "current.yaml", 'r') as f:
-                return yaml.safe_load(f)
-        except Exception as e:
-            print(f"Error loading configuration: {e}")
-            return {}
-
-    def convert_power_value(self, value: str) -> Optional[float]:
-        """Convert power value to standard unit (kW)."""
-        if not isinstance(value, str):
-            return None
+        Args:
+            element: Dictionary containing plant data
+            ways_data: Optional dictionary containing way node data
             
-        match = self.unit_patterns['power'].match(value.strip())
-        if match:
-            number, unit = match.groups()
-            unit = unit.upper()
-            if unit == 'W':
-                factor = self.power_conversion['W']
-            elif unit == 'KW':
-                factor = self.power_conversion['kW']
-            elif unit == 'MW':
-                factor = self.power_conversion['MW']
-            elif unit == 'GW':
-                factor = self.power_conversion['GW']
-            else:
-                return None
-                
-            try:
-                return float(number) * factor
-            except ValueError:
-                return None
-        return None
-
-    def convert_length_value(self, value: str) -> Optional[float]:
-        """Convert length value to standard unit (m)."""
-        if not isinstance(value, str):
-            if isinstance(value, (int, float)):
-                return float(value)
-            return None
-            
-        # First try to match value with unit
-        match = self.unit_patterns['length'].match(value.strip())
-        if match:
-            number, unit = match.groups()
-            try:
-                return float(number) * self.length_conversion[unit]
-            except (ValueError, KeyError):
-                return None
-        
-        # If no unit pattern matches, try to convert direct numeric value
-        try:
-            # Remove any whitespace and try to convert to float
-            return float(value.strip())
-        except (ValueError, AttributeError):
-            return None
-
-    def process_element(self, element: Dict, ways_data: Dict, country_code: str) -> Dict:
-        """Process a single element and extract relevant information."""
-        processed = {
-            'id': element.get('id'),
-            'type': element.get('type'),
-            'lat': element.get('lat'),
-            'lon': element.get('lon'),
-            'timestamp': datetime.now().isoformat(),
-            'country_code': country_code
-        }
-
-        # Process tags according to configuration
+        Returns:
+            Normalized capacity in MW or None if not available
+        """
         tags = element.get('tags', {})
         
-        # Process each category from config
-        for category in ['power_output', 'physical_dimensions', 'temporal', 'metadata']:
-            if category in self.config:
-                for key, config in self.config[category].items():
-                    if key in tags:
-                        if category in ['power_output', 'physical_dimensions']:
-                            processed[f"{key}_raw"] = tags[key]
-                            if category == 'power_output':
-                                processed[f"{key}_value"] = self.convert_power_value(tags[key])
-                                processed[f"{key}_unit"] = 'kW'
-                            else:
-                                processed[f"{key}_value"] = self.convert_length_value(tags[key])
-                                processed[f"{key}_unit"] = 'm'
-                        elif category == 'temporal':
-                            processed[key] = parse_date(tags[key])
-                        else:
-                            processed[key] = tags[key]
+        # Check for direct capacity values
+        capacity_keys = [
+            'plant:output:electricity',
+            'generator:output:electricity',
+            'capacity',
+            'power_output'
+        ]
+        
+        for key in capacity_keys:
+            if key in tags:
+                return self._normalize_capacity(tags[key])
+        
+        # If no direct capacity, try to estimate based on source type
+        source_type = tags.get('plant:source') or tags.get('generator:source')
+        if source_type in self.sources:
+            source_config = self.sources[source_type]
+            if source_config.estimation:
+                if source_config.estimation['method'] == 'area_based':
+                    # Calculate area and apply efficiency factor
+                    if element['type'] == 'way' and ways_data:
+                        way_data = ways_data.get(str(element['id']))
+                        if way_data and 'nodes' in way_data:
+                            # Get coordinates from ways_data
+                            coords = [
+                                {'lat': node_data['lat'], 'lon': node_data['lon']}
+                                for node_id, node_data in way_data['nodes'].items()
+                            ]
+                            if coords:
+                                area = calculate_area(coords)
+                                efficiency = source_config.estimation['efficiency']  # W/m2
+                                return (area * efficiency) / 1e6  # Convert W to MW
+                elif source_config.estimation['method'] == 'default_value':
+                    return source_config.estimation['default_capacity'] / 1000  # Convert kW to MW
+        
+        return None
 
-        # Calculate area for ways when generator:source is solar and generator:method is photovoltaic
-        if element['type'] == 'way' and str(element['id']) in ways_data:
-            way_data = ways_data[str(element['id'])]
-            if 'nodes' in way_data and 'generator:source' in tags and 'generator:method' in tags:
-                if tags["generator:source"] == "solar" and tags["generator:method"] == "photovoltaic":
-                    nodes = [node for node in way_data['nodes'].values()]
-                    area = self.calculate_way_area(nodes)
-                    if area is not None:
-                        processed['area_m2'] = area
-                        processed['generator:output:electricity_value'] = 150 * area / 1000 # kW = 150 W/m2 * area_m2/1000 TODO: hard-coded value
-                        processed['generator:output:electricity_unit'] = 'kW'
-                        processed['generator:output:electricity_raw'] = "Calculated: 150 W/m2 * area_m2 * 1 kW/1000 W"
+    def _extract_plant_data(self, element: Dict, ways_data: Dict) -> Optional[Dict]:
+        """Extract data from a single plant element"""
+        # Get basic properties
+        plant_data = {
+            'id': element['id'],
+            'type': element['type'],
+            'source': element.get('tags', {}).get('plant:source'),
+            'name': element.get('tags', {}).get('name'),
+        }
 
-            # Add center coordinates for ways
-            if 'center' in way_data:
-                processed['lat'] = way_data['center']['lat']
-                processed['lon'] = way_data['center']['lon']
+        # Get coordinates
+        coords = self._get_element_coordinates(element, ways_data)
+        if coords:
+            plant_data.update(coords)
 
-        return processed
+        # Get capacity
+        capacity = self._get_plant_capacity(element, ways_data)
+        if capacity:
+            plant_data['capacity_mw'] = capacity
 
-    def calculate_way_area(self, nodes: List[Dict[str, float]]) -> Optional[float]:
-        """Calculate area of a way in square meters using geodesic calculations."""
-        if len(nodes) < 3:
+        return plant_data if self._validate_plant_data(plant_data) else None
+
+    def _process_generator_cluster(self, cluster: List[Dict], source_type: str,
+                                source_config: PowerSource, ways_data: Dict) -> Optional[Dict]:
+        """Process a cluster of generators into a single plant"""
+        if not cluster:
             return None
 
-        # Create a polygon from the coordinates
-        coords = [(node['lon'], node['lat']) for node in nodes]
-        
-        # Ensure the polygon is closed
-        if coords[0] != coords[-1]:
-            coords.append(coords[0])
+        # Calculate cluster centroid
+        lats = []
+        lons = []
+        total_capacity = 0
 
-        # Create a polygon
-        poly = Polygon(coords)
-        
-        # Create a geodesic transformer
-        geod = pyproj.Geod(ellps='WGS84')
-        
-        try:
-            # Calculate the area
-            area = abs(geod.geometry_area_perimeter(poly)[0])
-            return area
-        except Exception as e:
-            print(f"Error calculating area: {e}")
+        for generator in cluster:
+            coords = self._get_element_coordinates(generator, ways_data)
+            if coords:
+                lats.append(coords['lat'])
+                lons.append(coords['lon'])
+            
+            # Sum up capacities
+            capacity = self._get_plant_capacity(generator, ways_data)
+            if capacity:
+                total_capacity += capacity
+
+        if not lats or not lons:
             return None
 
-    def extract_data(self, countries: Optional[List[str]]=None, force_refresh: bool=False) -> pd.DataFrame:
-        """Extract and process all data."""
-        if countries is not None:
-            power_data = {}
-            ways_data = {}
-            for country in countries:
-                country_code = self.api.get_country_code(country)
-                power, ways = self.api.get_data(country, force_refresh=force_refresh)
-                power_data.update({country_code: power})
-                ways_data.update(ways)
-        else:
-            power_data, ways_data = self.api.get_all_data()
+        return {
+            'id': f"cluster_{cluster[0]['id']}",
+            'type': 'generator_cluster',
+            'source': source_type,
+            'lat': sum(lats) / len(lats),
+            'lon': sum(lons) / len(lons),
+            'capacity_mw': total_capacity,
+            'generator_count': len(cluster)
+        }
 
-        processed_data = []
-        for country_code, country_data in power_data.items():
-            for element in country_data.get('elements', []):
-                processed = self.process_element(element, ways_data, country_code)
-                processed_data.append(processed)
+    def _process_generators(self, generators_data: Dict, ways_data: Dict) -> List[Dict]:
+        """Process and cluster generator data"""
+        generators_by_type = self._group_generators_by_type(generators_data['elements'])
+        processed_plants = []
 
-        # Call the aggregate way clusters method
-        cluster_summary = self.aggregate_way_clusters(ways_data)
+        for source_type, generators in generators_by_type.items():
+            if source_type not in self.sources:
+                continue
 
-        # Create DataFrame from the processed_data
-        df = pd.DataFrame(processed_data)
+            source_config = self.sources[source_type]
 
-        # If needed, merge the cluster_summary DataFrame with the main DataFrame (df)
-        # Example merge; customize as per your requirements
-        df = df.merge(cluster_summary, left_on='id', right_on='cluster', how='left')
+            if source_config.clustering:
+                # Cluster generators into plants
+                clusters = self._cluster_generators(
+                    generators,
+                    ways_data,
+                    source_config.clustering
+                )
 
-        # Sort columns
-        # df = df[self.target_columns]  # or any relevant processing if needed
-        return df
+                # Process each cluster as a plant
+                for cluster in clusters:
+                    plant = self._process_generator_cluster(
+                        cluster,
+                        source_type,
+                        source_config,
+                        ways_data  # Pass ways_data to the method
+                    )
+                    if plant:
+                        processed_plants.append(plant)
+
+        return processed_plants
+
+    def _normalize_capacity(self, capacity_str: str) -> Optional[float]:
+        """
+        Normalize capacity string to MW.
+        
+        Args:
+            capacity_str: String containing capacity value and optional unit
+            
+        Returns:
+            Capacity in MW or None if parsing fails
+        """
+        if not capacity_str:
+            return None
+            
+        # Convert to string if not already
+        capacity_str = str(capacity_str).strip().lower()
+        
+        # Try to extract number and unit using regex
+        match = re.match(r'^(\d+(?:\.\d+)?)\s*([a-zA-Z]+)?$', capacity_str)
+        if not match:
+            try:
+                # Try direct conversion if just a number
+                return float(capacity_str) / 1000  # Assume kW if no unit
+            except ValueError:
+                return None
+                
+        value, unit = match.groups()
+        value = float(value)
+        
+        # Convert to MW based on unit
+        if unit in ['w', 'watts']:
+            return value / 1e6
+        elif unit in ['kw', 'kilowatts']:
+            return value / 1000
+        elif unit in ['mw', 'megawatts']:
+            return value
+        elif unit in ['gw', 'gigawatts']:
+            return value * 1000
+        
+        # Default to kW if unit not recognized
+        return value / 1000
+
+    def extract_plants(self, countries: List[str], force_refresh: bool = False) -> pd.DataFrame:
+        """Main method to extract power plant data"""
+        all_plants = []
+
+        for country in countries:
+            # Fetch raw data
+            plants_data, generators_data, ways_data = self.api.get_country_data(
+                country,
+                force_refresh=force_refresh
+            )
+
+            # Process primary sources (plants)
+            primary_plants = self._process_plants(plants_data, ways_data)
+
+            # Process secondary sources (generators)
+            secondary_plants = self._process_generators(generators_data, ways_data)
+
+            # Merge and deduplicate
+            country_plants = self._merge_plants(primary_plants, secondary_plants)
+            all_plants.extend(country_plants)
+
+        return pd.DataFrame(all_plants)
+
+    def _process_plants(self, plants_data: Dict, ways_data: Dict) -> List[Dict]:
+        """Process direct power plant data"""
+        processed_plants = []
+
+        for element in plants_data['elements']:
+            if element['type'] not in ['way', 'node', 'relation']:
+                continue
+
+            plant = self._extract_plant_data(element, ways_data)
+            if plant:
+                processed_plants.append(plant)
+
+        return processed_plants
     
-    def aggregate_way_clusters(self, ways_data: Dict) -> pd.DataFrame:
-        """
-        Aggregate ways into clusters based on node coordinates.
+    @staticmethod
+    def _cluster_fn(fn, coords, config):
+        """Helper function to perform clustering. Coordinates lat/lon are in degrees and can be converted to radians."""
+        if 'to_radians' in config:
+            if config['to_radians']:
+                coords = np.radians(coords)
 
-        Parameters
-        ----------
-        ways_data : Dict
-            The ways data containing nodes' coordinates.
+        signature = inspect.signature(fn)
+        possible_parameters = list(signature.parameters.keys())
+        clustering = fn(**{param:config[param] for param in config if param in possible_parameters}).fit(coords)
+        return clustering
 
-        Returns
-        -------
-        pd.DataFrame
-            DataFrame with clusters, centroid coordinates, and aggregated power.
-        """
-        coordinates = []
-        completions = []
-        for way_id, way_info in ways_data.items():
-            for node_id, node_info in way_info['nodes'].items():
-                coordinates.append((node_info['lon'], node_info['lat'], way_info.get('power', 0)))
-                completions.append(way_id)
 
-        # Converting coordinates for clustering
-        coordinates_df = pd.DataFrame(coordinates, columns=['lon', 'lat', 'power'])
+    def _cluster_generators(self, generators: List[Dict], ways_data: Dict,
+                            clustering_config: Dict) -> List[List[Dict]]:
+        """Cluster generators based on configuration. Coordinates lat/lon are in degrees converted to radians. 
+        Distance related parameters should be in radians."""
+        # Extract coordinates for clustering
+        arrays = []
+        for gen in generators:
+            array = self._get_element_coordinates(gen, ways_data)
+            if array:
+                arrays.append([array['lat'], array['lon']])
+        coords = np.array(arrays)
 
-        # Apply HDBSCAN clustering
-        clustering = hdbscan.HDBSCAN(min_cluster_size=5).fit(coordinates_df[['lon', 'lat']])
-        coordinates_df['cluster'] = clustering.labels_
+        # Perform clustering
+        if clustering_config['method'] == 'kmeans':
+            
+            clustering = self._cluster_fn(KMeans, coords, clustering_config)
 
-        # Calculate centroid and aggregate power and area for each cluster
-        cluster_summary = (
-            coordinates_df.groupby('cluster')
-            .agg({'power': 'sum', 'lon': 'mean', 'lat': 'mean'})
-            .reset_index()
-        )
-        
-        cluster_summary.rename(columns={'lon': 'centroid_lon', 'lat': 'centroid_lat'}, inplace=True)
-        cluster_summary.to_csv('cluster_summary.csv', index=False)
+        elif clustering_config['method'] == 'dbscan':
+            clustering = self._cluster_fn(DBSCAN, coords, clustering_config)
 
-        return cluster_summary
+        elif clustering_config['method'] == 'hdbscan':
+            clustering = self._cluster_fn(HDBSCAN, coords, clustering_config)
+
+        else:
+            raise ValueError(f"Unknown clustering method: {clustering_config['method']}")
+
+        # Group generators by cluster
+        clusters = {}
+        for i, label in enumerate(clustering.labels_):
+            if label >= 0:  # Ignore noise points
+                clusters.setdefault(label, []).append(generators[i])
+
+        return list(clusters.values())
+
+    def _merge_plants(self, primary_plants: List[Dict],
+                      secondary_plants: List[Dict]) -> List[Dict]:
+        """Merge and deduplicate plants"""
+        all_plants = primary_plants + secondary_plants
+
+        # Implement deduplication logic based on spatial proximity
+        # and other rules from configuration
+
+        return all_plants
+
+    @staticmethod
+    def _validate_plant_data(plant_data: Dict) -> bool:
+        """Validate extracted plant data"""
+        required_fields = ['id', 'type', 'source']
+        return all(field in plant_data for field in required_fields)
+
+    @staticmethod
+    def _get_element_coordinates(element: Dict, ways_data: Dict) -> Optional[Dict]:
+        """Get coordinates for an element"""
+        if element['type'] == 'node':
+            return {'lat': element['lat'], 'lon': element['lon']}
+        elif element['type'] == 'way':
+            way_data = ways_data.get(str(element['id']))
+            if way_data and 'center' in way_data:
+                return way_data['center']
+        return None
+
+    def _group_generators_by_type(self, generators: List[Dict]) -> Dict[str, List[Dict]]:
+        """Group generators by their source type"""
+        grouped = {}
+        for generator in generators:
+            source = generator.get('tags', {}).get('generator:source')
+            if source:
+                grouped.setdefault(source, []).append(generator)
+        return grouped
+
 
 def main():
+    extractor = PowerPlantExtractor()
+    # Add test code here
     pass
 
 if __name__ == "__main__":

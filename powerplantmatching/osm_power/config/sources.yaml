@@ -1,0 +1,87 @@
+# Power source configurations
+solar:
+  type: generator
+  tags:
+    - generator:source=solar
+    - plant:source=solar
+  capacity_keys:
+    - generator:output:electricity
+    - plant:output:electricity
+  clustering:
+    method: hdbscan  # kmeans, dbscan, hdbscan
+    to_radians: true
+    metric: haversine
+    cluster_selection_epsilon: 0.00000785 # 50 meters / 6371000 meters (50 meters as the maximum distance between points)
+    min_samples: 5
+    cluster_selection_method: eom
+    core_dist_n_jobs: 4
+  estimation:
+    method: area_based
+    efficiency: 150  # W/m2
+
+wind:
+  type: generator
+  tags:
+    - generator:source=wind
+    - plant:source=wind
+  capacity_keys:
+    - generator:output:electricity
+    - plant:output:electricity
+  clustering:
+    method: dbscan # kmeans, dbscan, hdbscan
+    to_radians: false
+    eps: 0.009  # 1000 meters / 111000 meters (1000 meters as the maximum distance between points)
+    min_samples: 2
+  estimation:
+    method: default_value
+    default_capacity: 2000  # kW
+
+diesel:
+  type: plant
+  tags:
+    - plant:source=diesel
+  capacity_keys:
+    - plant:output:electricity
+
+
+# Algorithm parameters:
+#   hdbscan:
+#     min_cluster_size
+#     min_samples
+#     cluster_selection_epsilon
+#     max_cluster_size
+#     metric
+#     alpha
+#     p
+#     algorithm
+#     leaf_size
+#     memory
+#     approx_min_span_tree
+#     gen_min_span_tree
+#     core_dist_n_jobs
+#     cluster_selection_method
+#     allow_single_cluster
+#     prediction_data
+#     branch_detection_data
+#     match_reference_implementation
+#     cluster_selection_epsilon_max
+#     kwargs
+#   dbscan:
+#     eps
+#     min_samples
+#     metric
+#     metric_params
+#     algorithm
+#     leaf_size
+#     p
+#     n_jobs
+#   kmeans:
+#     n_clusters
+#     init
+#     n_init
+#     max_iter
+#     tol
+#     verbose
+#     random_state
+#     copy_x
+#     algorithm

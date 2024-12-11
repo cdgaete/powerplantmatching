@@ -28,8 +28,10 @@ class OverpassAPI:
             self.api_url = "https://overpass-api.de/api/interpreter"
         
         # Cache file paths
-        self.countries_cache = os.path.join(self.raw_dir, "countries_power.json")
+        self.plants_cache = os.path.join(self.raw_dir, "plants_power.json")
+        self.generators_cache = os.path.join(self.raw_dir, "generators_power.json")
         self.ways_cache = os.path.join(self.raw_dir, "ways_data.json")
+        self.nodes_cache = os.path.join(self.raw_dir, "nodes_data.json")
 
     def _load_cache(self, cache_path: str) -> Optional[Dict[str,Dict]]:
         """Load cached data if it exists."""
@@ -62,17 +64,17 @@ class OverpassAPI:
         except LookupError:
             raise ValueError(f"Invalid country name: {country}")
 
-    def get_power_data(self, country: str, force_refresh: bool = False) -> Dict:
-        """Get power generation data for a country."""
+    def get_plants_data(self, country: str, force_refresh: bool = False) -> Dict:
+        """Get power plant data for a country."""
         country_code = self.get_country_code(country)
         
         # Load cache
         if not force_refresh:
-            cached = self._load_cache(self.countries_cache)
+            cached = self._load_cache(self.plants_cache)
             if cached and country_code in cached['data']:
                 return cached['data'][country_code]
 
-        # Main power facilities query
+        # Power plants query
         query = f"""
         [out:json][timeout:300];
         area["ISO3166-1"="{country_code}"][admin_level=2]->.boundaryarea;
@@ -80,6 +82,39 @@ class OverpassAPI:
             node["power"="plant"](area.boundaryarea);
             way["power"="plant"](area.boundaryarea);
             relation["power"="plant"](area.boundaryarea);
+        );
+        out body;
+        """
+
+        try:
+            response = requests.post(self.api_url, data={'data': query})
+            response.raise_for_status()
+            data = response.json()
+            
+            # Update cache
+            cached = self._load_cache(self.plants_cache) or {'data': {}}
+            cached['data'][country_code] = data
+            self._save_cache(self.plants_cache, cached['data'])
+            
+            return data
+        except requests.RequestException as e:
+            raise ConnectionError(f"Failed to fetch plants data: {str(e)}")
+
+    def get_generators_data(self, country: str, force_refresh: bool = False) -> Dict:
+        """Get power generator data for a country."""
+        country_code = self.get_country_code(country)
+        
+        # Load cache
+        if not force_refresh:
+            cached = self._load_cache(self.generators_cache)
+            if cached and country_code in cached['data']:
+                return cached['data'][country_code]
+
+        # Power generators query
+        query = f"""
+        [out:json][timeout:300];
+        area["ISO3166-1"="{country_code}"][admin_level=2]->.boundaryarea;
+        (
             node["power"="generator"](area.boundaryarea);
             way["power"="generator"](area.boundaryarea);
             relation["power"="generator"](area.boundaryarea);
@@ -93,20 +128,20 @@ class OverpassAPI:
             data = response.json()
             
             # Update cache
-            cached = self._load_cache(self.countries_cache) or {'data': {}}
+            cached = self._load_cache(self.generators_cache) or {'data': {}}
             cached['data'][country_code] = data
-            self._save_cache(self.countries_cache, cached['data'])
+            self._save_cache(self.generators_cache, cached['data'])
             
             return data
         except requests.RequestException as e:
-            raise ConnectionError(f"Failed to fetch data: {str(e)}")
+            raise ConnectionError(f"Failed to fetch generators data: {str(e)}")
 
     def get_ways_data(self, way_ids: List[int]) -> Dict:
         """Get centroids and nodes for a list of ways in a single query."""
         # Load cache
         cached = self._load_cache(self.ways_cache) or {'data': {}}
         
-        # Filter out already cached ways that were cached today
+        # Filter out already cached ways
         ways_to_fetch = [
             way_id for way_id in way_ids 
             if str(way_id) not in cached['data']
@@ -172,72 +207,86 @@ class OverpassAPI:
             str(way_id): cached['data'].get(str(way_id))
             for way_id in way_ids
         }
-    
-    def get_data(self, country: str, force_refresh: bool = False) -> Dict:
-        """Get power data for a country."""
-        power_data = self.get_power_data(country, force_refresh)
-        ways_data = self.get_ways_data([element['id'] for element in power_data['elements']])
-        return power_data, ways_data
-    
-    def get_all_data(self, force_refresh: bool = False) -> Dict:
-        """Get power data for all countries already cached."""
-        if not force_refresh:
-            cached = self._load_cache(self.countries_cache)
-            if cached:
-                ways_all = {'data': {}}
-                for _, power_data in cached.get('data', {}).items():
-                    ways = self.get_ways_data([element['id'] for element in power_data['elements']])
-                    ways_all['data'].update(ways)
-                return cached, ways_all
-            else:
-                raise ValueError("No cached data found")
-        else:
-            # get coutry codes
-            cached = self._load_cache(self.countries_cache) or {'data': {}}
-            countries = list(cached.get('data', {}).keys())
-            ways_all = {'data': {}}
-            for country in countries:
-                power_data, ways_data = self.get_data(country, force_refresh)
-                ways_all['data'].update(ways_data)
-                cached['data'][country] = power_data
-            self._save_cache(self.countries_cache, cached['data'])
-            return cached, ways_all
+
+    def get_country_data(self, country: str, force_refresh: bool = False) -> Dict:
+        """Get both plants and generators data for a specific country."""
+        plants_data = self.get_plants_data(country, force_refresh)
+        generators_data = self.get_generators_data(country, force_refresh)
+        
+        # Collect all way IDs from both datasets
+        way_ids = []
+        for dataset in [plants_data, generators_data]:
+            way_ids.extend([
+                element['id'] 
+                for element in dataset['elements'] 
+                if element['type'] == 'way'
+            ])
+        
+        ways_data = self.get_ways_data(way_ids)
+        return plants_data, generators_data, ways_data
+
+    def get_countries_data(self, countries: Optional[List[str]] = None, force_refresh: bool = False) -> Dict:
+        """
+        Get data for multiple countries, using cache when available.
+        
+        Args:
+            countries: List of country names. If None, returns all cached data.
+            force_refresh: If True, forces download of data even if cached.
+            
+        Returns:
+            Dict containing plants_data, generators_data, and ways_data for requested countries.
+        """
+        all_plants_data = {}
+        all_generators_data = {}
+        all_ways_data = {}
+
+        # If no countries specified, return all cached data
+        if countries is None or len(countries) == 0:
+            # Load cached data
+            plants_cached = self._load_cache(self.plants_cache)
+            generators_cached = self._load_cache(self.generators_cache)
+            ways_cached = self._load_cache(self.ways_cache)
+
+            if not any([plants_cached, generators_cached, ways_cached]):
+                raise ValueError("No cached data available and no countries specified")
+
+            return {
+                'plants_data': plants_cached.get('data', {}) if plants_cached else {},
+                'generators_data': generators_cached.get('data', {}) if generators_cached else {},
+                'ways_data': ways_cached.get('data', {}) if ways_cached else {}
+            }
+
+        # Process specified countries
+        for country in countries:
+            try:
+                country_code = self.get_country_code(country)
+                
+                # Get data for current country
+                plants_data, generators_data, ways_data = self.get_country_data(
+                    country, 
+                    force_refresh=force_refresh
+                )
+
+                # Add to collected data
+                all_plants_data[country_code] = plants_data
+                all_generators_data[country_code] = generators_data
+                all_ways_data.update(ways_data)  # ways_data is already a dict of way_id: way_data
+
+            except Exception as e:
+                print(f"Error processing country {country}: {str(e)}")
+                continue
+
+        if not any([all_plants_data, all_generators_data, all_ways_data]):
+            raise ValueError("No data could be retrieved for the specified countries")
+
+        return {
+            'plants_data': all_plants_data,
+            'generators_data': all_generators_data,
+            'ways_data': all_ways_data
+        }
 
 def main():
-    # Test the API functionality
-    api = OverpassAPI()
-
-    try:
-        # Test with Luxembourg
-        print("Fetching data for Luxembourg...")
-        data = api.get_power_data("Luxembourg")
-        print(f"Found {len(data['elements'])} power facilities")
-
-        # Collect all way IDs
-        way_ids = [
-            element['id'] 
-            for element in data['elements'] 
-            if element['type'] == 'way'
-        ]
-
-        if way_ids:
-            print(f"\nFetching data for {len(way_ids)} ways...")
-            ways_data = api.get_ways_data(way_ids)
-            print(f"Retrieved data for {len(ways_data)} ways")
-            
-            # Print example data for the first way
-            first_way_id = str(way_ids[0])
-            if first_way_id in ways_data:
-                way_data = ways_data[first_way_id]
-                print(f"\nExample data for way {first_way_id}:")
-                print(f"Center: {way_data['center']}")
-                print(f"Number of nodes: {len(way_data['nodes'])}")
-                if way_data['nodes']:
-                    first_node = next(iter(way_data['nodes'].values()))
-                    print(f"Sample node: {first_node}")
-
-    except Exception as e:
-        print(f"Error: {str(e)}")
+    pass
 
 if __name__ == "__main__":
     main()

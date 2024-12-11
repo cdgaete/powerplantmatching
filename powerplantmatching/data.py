@@ -44,7 +44,7 @@ from .utils import (
     get_raw_file,
     set_column_name,
 )
-from .osm_power.src.extract import PowerDataExtractor
+# from .osm_power.src.extract import PowerDataExtractor
 
 logger = logging.getLogger(__name__)
 cget = pycountry.countries.get

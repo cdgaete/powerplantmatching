@@ -1,4 +1,5 @@
 pyyaml
-shapely
-pyproj
 pandas
+numpy
+sklearn
+hdbscan
