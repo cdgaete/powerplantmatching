@@ -12,7 +12,7 @@ solar:
     to_radians: true
     metric: haversine
     cluster_selection_epsilon: 0.00000785 # 50 meters / 6371000 meters (50 meters as the maximum distance between points)
-    min_samples: 5
+    min_cluster_size: 5
     cluster_selection_method: eom
     core_dist_n_jobs: 4
   estimation:
@@ -42,6 +42,18 @@ diesel:
     - plant:source=diesel
   capacity_keys:
     - plant:output:electricity
+
+biomass:
+  type: generator
+  tags:
+    - generator:source=biomass
+  capacity_keys:
+    - generator:output:electricity
+  clustering:
+    method: dbscan # kmeans, dbscan, hdbscan
+    to_radians: false
+    eps: 0.0018  # 200 meters / 111000 meters (200 meters as the maximum distance between points)
+    min_samples: 2
 
 
 # Algorithm parameters:
