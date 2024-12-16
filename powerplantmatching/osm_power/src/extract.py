@@ -52,7 +52,6 @@ class PowerPlantExtractor:
         self.config_dir = config_dir or Path(__file__).parent.parent / "config"
         self.api = OverpassAPI()
         self.load_configurations(custom_config=custom_config)
-        self.get_cache()
         self.gen_out = {}
 
     def get_cache(self):
@@ -104,6 +103,8 @@ class PowerPlantExtractor:
                 country,
                 force_refresh=force_refresh
             )
+
+            self.get_cache()
 
             country_obj = pycountry.countries.lookup(country)
   
@@ -376,6 +377,10 @@ class PowerPlantExtractor:
                         source_config.clustering
                     )
 
+                    if not clusters:
+                        logger.warning(f"No clusters found for source type: {source_type}")
+                        continue
+
                     for cluster in clusters:
                         plant = self._process_generator_cluster(
                             cluster,
@@ -456,7 +461,8 @@ class PowerPlantExtractor:
 
         signature = inspect.signature(fn)
         possible_parameters = list(signature.parameters.keys())
-        clustering = fn(**{param:config[param] for param in config if param in possible_parameters}).fit(coords)
+        model = fn(**{param:config[param] for param in config if param in possible_parameters})
+        clustering = model.fit(coords)
         return clustering
 
     def _cluster_generators(self, generators: List[Dict], clustering_config: Dict) -> List[List[Dict]]:
@@ -465,6 +471,11 @@ class PowerPlantExtractor:
             array = self._get_element_coordinates(gen)
             if array:
                 arrays.append([array['lat'], array['lon']])
+        
+        if not arrays:
+            logger.warning(f"No generators found for clustering with config: {clustering_config}")
+            return []
+        
         coords = np.array(arrays)
 
         if clustering_config['method'] == 'kmeans':
