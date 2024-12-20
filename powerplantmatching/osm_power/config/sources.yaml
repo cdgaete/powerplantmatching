@@ -36,13 +36,6 @@ wind:
     method: default_value
     default_capacity: 2000  # kW
 
-diesel:
-  type: plant
-  tags:
-    - plant:source=diesel
-  capacity_keys:
-    - plant:output:electricity
-
 biomass:
   type: generator
   tags:
