@@ -92,33 +92,53 @@ class FlowAnalyzer:
     
     def plot_sunburst(self, title: str = "Data Processing Flow Distribution") -> go.Figure:
         """Create a sunburst diagram of the flow paths."""
-        # Prepare data structure for sunburst
-        data_dict = defaultdict(lambda: defaultdict(int))
+        # Create nested dictionary structure
+        def nested_dict():
+            return defaultdict(nested_dict)
         
+        data_tree = nested_dict()
+        
+        # Build tree structure
         for path, count in self.flow_counts.items():
             steps = path.split(' -> ')
-            current_dict = data_dict
+            current = data_tree
             for step in steps:
-                current_dict = current_dict[step]
-                current_dict['value'] = current_dict.get('value', 0) + count
+                current = current[step]
+            current['_value'] = count  # Use _value to avoid conflicts with subdictories
         
-        # Convert to lists for plotly
+        # Prepare data for sunburst
         ids = []
         labels = []
         parents = []
         values = []
         
-        def process_dict(d, parent=""):
-            for key, value in d.items():
-                if key != 'value':
-                    current_id = f"{parent}_{key}" if parent else key
-                    ids.append(current_id)
-                    labels.append(key)
-                    parents.append(parent)
-                    values.append(value.get('value', 0))
-                    process_dict(value, current_id)
+        def process_tree(tree, parent_id=""):
+            for key, subtree in tree.items():
+                if key == '_value':
+                    continue
+                    
+                # Create ID for current node
+                current_id = f"{parent_id}_{key}" if parent_id else key
+                
+                # Add node information
+                ids.append(current_id)
+                labels.append(key)
+                parents.append(parent_id)
+                
+                # Calculate value (sum of all nested _values)
+                def sum_values(t):
+                    total = t.get('_value', 0)
+                    for k, v in t.items():
+                        if k != '_value' and isinstance(v, dict):
+                            total += sum_values(v)
+                    return total
+                
+                values.append(sum_values(subtree))
+                
+                # Process children
+                process_tree(subtree, current_id)
         
-        process_dict(data_dict)
+        process_tree(data_tree)
         
         # Create figure
         fig = go.Figure(go.Sunburst(

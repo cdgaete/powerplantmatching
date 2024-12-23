@@ -15,6 +15,7 @@ from pathlib import Path
 from shapely.geometry import Point, Polygon
 from math import radians, sin, cos, sqrt, atan2
 from .api import OverpassAPI
+from .flow_analysis import FlowAnalyzer
 
 
 logger = logging.getLogger(__name__)
@@ -57,6 +58,7 @@ class PowerPlantExtractor:
         self.load_configurations(custom_config=custom_config)
         self.gen_out = {}
         self.clusters = {}
+        self.flow_analyzer = FlowAnalyzer()
 
     def get_cache(self):
         self.cache_ways = self.api._load_cache(self.api.ways_cache)
@@ -131,13 +133,22 @@ class PowerPlantExtractor:
         processed_plants = []
         plant_polygons = []
 
-        # orgaize elements by type starting with 'relation' then 'way' then 'node'
-        plants_data['elements'] = sorted(plants_data['elements'], key=lambda x: ['relation', 'way', 'node'].index(x['type']))
+        # organize elements by type starting with 'relation' then 'way' then 'node'
+        plants_data['elements'] = sorted(
+            plants_data['elements'], 
+            key=lambda x: ['relation', 'way', 'node'].index(x['type'])
+        )
 
         ways_in_relations = set()
         ways_rel_mapping = {}
         for element in plants_data['elements']:
-            plant = self._process_plant_element(element, country=country, case="plants")
+            # Pass the current plant_polygons list
+            plant = self._process_plant_element(
+                element, 
+                plant_polygons=plant_polygons,  # Pass the current plant_polygons
+                country=country, 
+                case="plants"
+            )
             if plant:
                 if element['type'] == 'relation':
                     for rel_element in element['members']:
@@ -163,63 +174,78 @@ class PowerPlantExtractor:
 
         return processed_plants, plant_polygons
     
-    def _process_plant_element(self, element: Dict, country: Optional[str] = None, case: Optional[str] = None) -> Optional[Plant]:
-
+    def _process_plant_element(self, element: Dict, plant_polygons: Optional[List[PlantPolygon]] = None, country: Optional[str] = None, case: Optional[str] = None) -> Optional[Plant]:
+        flow_path = ["Start Data Collection"]
+        
+        # Track element type
+        flow_path.append(f"Element Type: {element['type']}")
+        
+        # Track power type
+        power_type = element.get('tags', {}).get('power')
+        flow_path.append(f"Power Type: {power_type}")
+        
+        if power_type == 'plant':
+            flow_path.append("Process as Plant")
+            
+            # Track element type for plant
+            flow_path.append(f"Plant Element Type: {element['type']}")
+            
+            # Track capacity presence
+            has_capacity = False
+            capacity, source = self._get_plant_capacity(element)
+            if capacity is not None:
+                has_capacity = True
+                flow_path.append("Has Direct Capacity")
+            else:
+                flow_path.append("No Direct Capacity")
+                
+                # Track capacity estimation path
+                if element['type'] == 'way':
+                    source_type = element.get('tags', {}).get('plant:source')
+                    if source_type == 'solar':
+                        flow_path.append("Solar Area Estimation")
+                    elif source_type == 'wind':
+                        flow_path.append("Wind Default Value")
+                    else:
+                        flow_path.append("No Capacity Available")
+                elif element['type'] == 'relation':
+                    flow_path.append("Check Member Elements")
+                    
+        elif power_type == 'generator':
+            flow_path.append("Process as Generator")
+            
+            # Track if inside plant polygon
+            coords = self._get_element_coordinates(element)
+            if coords and plant_polygons:  # Check if plant_polygons is provided
+                point = Point(coords['lon'], coords['lat'])
+                inside_plant = False
+                for plantpolygon in plant_polygons:
+                    if plantpolygon.obj.contains(point):
+                        inside_plant = True
+                        flow_path.append("Inside Plant Polygon")
+                        break
+                if not inside_plant:
+                    flow_path.append("Outside Plant Polygon")
+                    
+                    # Track source type presence
+                    source_type = element.get('tags', {}).get('generator:source')
+                    if source_type:
+                        flow_path.append("Has Source Type")
+                        if source_type in self.sources:
+                            flow_path.append("Source in Config")
+                        else:
+                            flow_path.append("Source not in Config")
+                    else:
+                        flow_path.append("No Source Type")
+        
+        # Record the flow path
+        self.flow_analyzer.add_flow(" -> ".join(flow_path))
+        
+        # Original processing logic continues here...
         plant_data = self._extract_plant_data(element, country=country, case=case)
         if not plant_data:
-            logger.debug(f"Failed to extract data for element {element['id']} of type {element['type']}")
             return None
 
-        if element['type'] == 'way':
-            if 'capacity_mw' not in plant_data:
-                way_data = self.query_cached_element('way', str(element['id']))
-                if way_data and 'nodes' in way_data:
-                    total_capacity = 0
-                    for node_id in way_data['nodes']:
-                        node_data = self.query_cached_element('node', str(node_id))
-                        if node_data:
-                            node_capacity, _ = self._get_plant_capacity(node_data)
-                            if node_capacity:
-                                total_capacity += node_capacity
-                    
-                    if total_capacity > 0:
-                        plant_data['capacity_mw'] = total_capacity
-                        plant_data['capacity_source'] = 'aggregated'
-                if 'capacity_mw' not in plant_data:
-                    nodes = []
-                    for node_id in way_data['nodes']:
-                        node_data = self.query_cached_element('node', str(node_id))
-                        if node_data:
-                            nodes.append({'lon': node_data['lon'], 'lat': node_data['lat']})
-                    
-                    if nodes:
-                        area = calculate_area(nodes)
-                        source_type = plant_data['source']
-                        if source_type in self.sources:
-                            source_config = self.sources[source_type]
-                            if source_config.estimation and source_config.estimation['method'] == 'area_based':
-                                efficiency = source_config.estimation['efficiency']
-                                plant_data['capacity_mw'] = (area * efficiency) / 1e6
-                                plant_data['capacity_source'] = 'estimated'
-
-        elif element['type'] == 'relation':
-            if 'capacity_mw' not in plant_data:
-                relation_data = self.query_cached_element('relation', str(element['id']))
-                if relation_data and 'members' in relation_data:
-                    total_capacity = 0
-                    for member in relation_data['members']:
-                        if member['type'] == 'way':
-                            # way in relation are ussually not a power plant, so skip
-                            continue
-                        elif member['type'] == 'node':
-                            node_data = self.query_cached_element('node', str(member['ref']))
-                            if node_data:
-                                node_capacity, _ = self._get_plant_capacity(node_data)
-                                if node_capacity:
-                                    total_capacity += node_capacity
-                    if total_capacity > 0:
-                        plant_data['capacity_mw'] = total_capacity
-                        plant_data['capacity_source'] = 'aggregated'
         return Plant(**plant_data) if self._validate_plant_data(plant_data) else None
     
     def _create_polygon(self, element: Dict) -> Optional[PlantPolygon]:
@@ -361,7 +387,7 @@ class PowerPlantExtractor:
             logger.debug(f"Unsupported element type: {element['type']}")
         return None
 
-    def _process_generators(self, generators_data: Dict, plant_polygons: List[Polygon], country: Optional[str] = None) -> List[Plant]:
+    def _process_generators(self, generators_data: Dict, plant_polygons: List[PlantPolygon], country: Optional[str] = None) -> List[Plant]:
         self.current = "Generators"
         generators_by_type = self._group_generators_by_type(generators_data['elements'])
         processed_plants = []
@@ -370,7 +396,12 @@ class PowerPlantExtractor:
             filtered_generators = self._filter_generators(generators, plant_polygons)
             if source_type not in self.sources:
                 for generator in filtered_generators:
-                    plant = self._process_plant_element(generator, country=country, case="excluded_source")
+                    plant = self._process_plant_element(
+                        generator, 
+                        plant_polygons=plant_polygons,
+                        country=country, 
+                        case="excluded_source"
+                    )
                     if plant:
                         processed_plants.append(plant)
                     else:
@@ -396,7 +427,12 @@ class PowerPlantExtractor:
 
                     if units:
                         for generator in units:
-                            plant = self._process_plant_element(generator, country=country, case="noise_point")
+                            plant = self._process_plant_element(
+                                generator, 
+                                plant_polygons=plant_polygons,
+                                country=country, 
+                                case="noise_point"
+                            )
                             if plant:
                                 processed_plants.append(plant)
                             else:
@@ -419,7 +455,7 @@ class PowerPlantExtractor:
                             source_type,
                             country=country,
                             case="cluster_point"
-                            )
+                        )
 
                         processed_plants.append(plant)
 
@@ -617,28 +653,26 @@ class PowerPlantExtractor:
                 raise ValueError("No data available. Please run extract_plants() first or provide a dataframe.")
             df = self.last_extracted_df
 
-        # Ensure capacity_mw is numeric
         df['capacity_mw'] = pd.to_numeric(df['capacity_mw'], errors='coerce')
-
-        # Group by country and source, sum the capacity
         summary = df.groupby(['country', 'source'])['capacity_mw'].sum().unstack(fill_value=0)
-
-        # Calculate total for each country
         summary['Total'] = summary.sum(axis=1)
-
-        # Calculate total for each source
         source_totals = summary.sum().to_frame('Total').T
-        
-        # Combine the summary with source totals
         summary = pd.concat([summary, source_totals])
-
-        # Format the values to 2 decimal places
         summary = summary.round(2)
-
-        # Sort the dataframe by Total descending
         summary = summary.sort_values('Total', ascending=False)
-
         return summary
+    
+    def get_flow_summary(self) -> pd.DataFrame:
+        """Get a summary of the data processing flows."""
+        return self.flow_analyzer.get_summary()
+
+    def plot_flow_sankey(self, title: str = "Data Processing Flow") -> go.Figure:
+        """Create a Sankey diagram of the data processing flows."""
+        return self.flow_analyzer.plot_sankey(title)
+
+    def plot_flow_sunburst(self, title: str = "Data Processing Flow Distribution") -> go.Figure:
+        """Create a sunburst diagram of the data processing flows."""
+        return self.flow_analyzer.plot_sunburst(title)
 
 
 def visualize_clusters(data: Dict[str, List], title: str = "Generator Clusters", show: bool = False):
