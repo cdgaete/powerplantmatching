@@ -1,3 +1,4 @@
+from datetime import date
 import pandas as pd
 import numpy as np
 import pycountry
@@ -22,9 +23,6 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class PowerSource:
-    type: str
-    tags: List[str]
-    capacity_keys: List[str]
     clustering: Optional[Dict] = None
     estimation: Optional[Dict] = None
 
@@ -54,16 +52,16 @@ class Plant:
 class PowerPlantExtractor:
     def __init__(self, config_dir: Optional[Path] = None, custom_config: Optional[Dict[str, Any]] = None):
         self.config_dir = config_dir or Path(__file__).parent.parent / "config"
-        self.api = OverpassAPI()
         self.load_configurations(custom_config=custom_config)
+        self.api = OverpassAPI(custom_config=custom_config)
         self.gen_out = {}
         self.clusters = {}
         self.flow_analyzer = FlowAnalyzer()
 
     def get_cache(self):
-        self.cache_ways = self.api._load_cache(self.api.ways_cache)
-        self.cache_relations = self.api._load_cache(self.api.relations_cache)
-        self.cache_nodes = self.api._load_cache(self.api.nodes_cache)
+        self.cache_ways = self.api._load_cache(self.api.ways_cache, date_check=self.api.date_check)
+        self.cache_relations = self.api._load_cache(self.api.relations_cache, date_check=self.api.date_check)
+        self.cache_nodes = self.api._load_cache(self.api.nodes_cache, date_check=self.api.date_check)
 
     def query_cached_element(self, element_type: str, element_id: str) -> Dict:
         try:

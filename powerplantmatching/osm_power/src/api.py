@@ -1,7 +1,7 @@
 import os
 import json
 import requests
-from typing import Dict, Optional, List, Tuple, Set
+from typing import Dict, Optional, List, Tuple, Set, Any
 from datetime import datetime
 import appdirs
 import pycountry
@@ -10,7 +10,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 class OverpassAPI:
-    def __init__(self, api_url: Optional[str] = None):
+    def __init__(self, custom_config: Optional[Dict[str, Any]] = None):
         """
         Initialize the OverpassAPI class.
 
@@ -23,6 +23,13 @@ class OverpassAPI:
         self.cache_dir = appdirs.user_cache_dir("osm-power")
         self.raw_dir = os.path.join(self.cache_dir, "raw")
         os.makedirs(self.raw_dir, exist_ok=True)
+
+        if custom_config:
+            api_url = custom_config.get("api_url")
+            date_check = custom_config.get("date_check", False)
+        else:
+            api_url = None
+            date_check = False
 
         if api_url:
             self.api_url = api_url
@@ -37,17 +44,21 @@ class OverpassAPI:
         self.nodes_cache = os.path.join(self.raw_dir, "nodes_data.json")
         self.relations_cache = os.path.join(self.raw_dir, "relations_data.json")
 
-    def _load_cache(self, cache_path: str) -> Optional[Dict[str,Dict]]:
+        self.date_check = date_check
+
+    def _load_cache(self, cache_path: str, date_check: bool = False) -> Optional[Dict[str,Dict]]:
         """Load cached data if it exists."""
         if os.path.exists(cache_path):
             try:
                 with open(cache_path, 'r') as f:
                     cached = json.load(f)
-                    # Check if cache is from today
-                    if cached.get('timestamp'):
-                        cache_date = datetime.fromisoformat(cached['timestamp']).date()
-                        if cache_date == datetime.now().date():
-                            return cached
+                    if date_check:
+                        # Check cache date
+                        if cached.get('timestamp'):
+                            cache_date = datetime.fromisoformat(cached['timestamp']).date()
+                            if cache_date.month == datetime.now().month:
+                                return cached
+                    return cached
             except (json.JSONDecodeError, KeyError):
                 return None
         return None
@@ -74,7 +85,7 @@ class OverpassAPI:
         
         # Load cache
         if not force_refresh:
-            cached = self._load_cache(self.plants_cache)
+            cached = self._load_cache(self.plants_cache, self.date_check)
             if cached and country_code in cached['data']:
                 return cached['data'][country_code]
 
@@ -96,7 +107,7 @@ class OverpassAPI:
             data = response.json()
             
             # Update cache
-            cached = self._load_cache(self.plants_cache) or {'data': {}}
+            cached = self._load_cache(self.plants_cache, self.date_check) or {'data': {}}
             cached['data'][country_code] = data
             self._save_cache(self.plants_cache, cached['data'])
             
@@ -110,7 +121,7 @@ class OverpassAPI:
         
         # Load cache
         if not force_refresh:
-            cached = self._load_cache(self.generators_cache)
+            cached = self._load_cache(self.generators_cache, self.date_check)
             if cached and country_code in cached['data']:
                 return cached['data'][country_code]
 
@@ -132,7 +143,7 @@ class OverpassAPI:
             data = response.json()
             
             # Update cache
-            cached = self._load_cache(self.generators_cache) or {'data': {}}
+            cached = self._load_cache(self.generators_cache, self.date_check) or {'data': {}}
             cached['data'][country_code] = data
             self._save_cache(self.generators_cache, cached['data'])
             
@@ -142,7 +153,7 @@ class OverpassAPI:
 
     def get_nodes_data(self, node_ids: List[int]) -> Dict:
         """Get data for a list of nodes."""
-        nodes_cached = self._load_cache(self.nodes_cache) or {'data': {}}
+        nodes_cached = self._load_cache(self.nodes_cache, self.date_check) or {'data': {}}
         
         # Filter out already cached nodes
         nodes_to_fetch = [
@@ -184,8 +195,8 @@ class OverpassAPI:
     def get_ways_data(self, way_ids: List[int]) -> Tuple[Dict, Set[int]]:
         """Get full data for a list of ways in a single query."""
         # Load cache
-        ways_cached = self._load_cache(self.ways_cache) or {'data': {}}
-        nodes_cached = self._load_cache(self.nodes_cache) or {'data': {}}
+        ways_cached = self._load_cache(self.ways_cache, self.date_check) or {'data': {}}
+        nodes_cached = self._load_cache(self.nodes_cache, self.date_check) or {'data': {}}
         
         # Filter out already cached ways
         ways_to_fetch = [
@@ -239,9 +250,9 @@ class OverpassAPI:
     
     def get_relations_data(self, relation_ids: List[int]) -> Dict:
         """Get data for a list of relations."""
-        relations_cached = self._load_cache(self.relations_cache) or {'data': {}}
-        ways_cached = self._load_cache(self.ways_cache) or {'data': {}}
-        nodes_cached = self._load_cache(self.nodes_cache) or {'data': {}}
+        relations_cached = self._load_cache(self.relations_cache, self.date_check) or {'data': {}}
+        ways_cached = self._load_cache(self.ways_cache, self.date_check) or {'data': {}}
+        nodes_cached = self._load_cache(self.nodes_cache, self.date_check) or {'data': {}}
         
         # Filter out already cached relations
         relations_to_fetch = [
@@ -344,8 +355,8 @@ class OverpassAPI:
         # If no countries specified, return all cached data
         if countries is None or len(countries) == 0:
             # Load cached data
-            plants_cached = self._load_cache(self.plants_cache)
-            generators_cached = self._load_cache(self.generators_cache)
+            plants_cached = self._load_cache(self.plants_cache, self.date_check)
+            generators_cached = self._load_cache(self.generators_cache, self.date_check)
 
             if not any([plants_cached, generators_cached]):
                 raise ValueError("No cached data available and no countries specified")
