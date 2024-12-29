@@ -3,6 +3,8 @@ date_check: true
 api_url: "https://overpass-api.de/api/interpreter"
 cache_dir: "~/.cache/osm-power"
 force_refresh: false
+enable_estimation: true
+enable_clustering: false
 
 # Power source configurations
 sources:

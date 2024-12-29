@@ -97,7 +97,9 @@ class PowerPlantExtractor:
         self.date_check = self.config.get('date_check', False)
         self.cache_dir = Path(self.config.get('cache_dir', '~/.cache/osm-power')).expanduser()
         self.force_refresh = self.config.get('force_refresh', False)
-        
+        self.enable_estimation = self.config.get('enable_estimation', True)
+        self.enable_clustering = self.config.get('enable_clustering', True)
+
         logging_config = self.config.get('logging', {})
         logging.basicConfig(level=logging_config.get('level', 'INFO'),
                             format=logging_config.get('format', '%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
@@ -298,25 +300,26 @@ class PowerPlantExtractor:
                 if normalized_capacity:
                     return normalized_capacity, "direct"
 
-        source_type = tags.get('plant:source') or tags.get('generator:source')
-        if source_type in self.sources:
-            source_config = self.sources[source_type]
-            if source_config.estimation:
-                if source_config.estimation['method'] == 'area_based':
-                    if element['type'] == 'way':
-                        way_data = self.query_cached_element('way', str(element['id']))
-                        if way_data and 'nodes' in way_data:
-                            coords = []
-                            for node_id in way_data['nodes']:
-                                node_data = self.query_cached_element('node', str(node_id))
-                                if node_data:
-                                    coords.append({'lat': node_data['lat'], 'lon': node_data['lon']})
-                            if coords:
-                                area = calculate_area(coords)
-                                efficiency = source_config.estimation['efficiency']
-                                return (area * efficiency) / 1e6, "estimated"
-                elif source_config.estimation['method'] == 'default_value':
-                    return source_config.estimation['default_capacity'] / 1000, "estimated"
+        if self.enable_estimation:
+            source_type = tags.get('plant:source') or tags.get('generator:source')
+            if source_type in self.sources:
+                source_config = self.sources[source_type]
+                if source_config.estimation:
+                    if source_config.estimation['method'] == 'area_based':
+                        if element['type'] == 'way':
+                            way_data = self.query_cached_element('way', str(element['id']))
+                            if way_data and 'nodes' in way_data:
+                                coords = []
+                                for node_id in way_data['nodes']:
+                                    node_data = self.query_cached_element('node', str(node_id))
+                                    if node_data:
+                                        coords.append({'lat': node_data['lat'], 'lon': node_data['lon']})
+                                if coords:
+                                    area = calculate_area(coords)
+                                    efficiency = source_config.estimation['efficiency']
+                                    return (area * efficiency) / 1e6, "estimated"
+                    elif source_config.estimation['method'] == 'default_value':
+                        return source_config.estimation['default_capacity'] / 1000, "estimated"
 
         return None, "unknown"
 
@@ -389,9 +392,9 @@ class PowerPlantExtractor:
             if source_type not in self.sources:
                 for generator in filtered_generators:
                     plant = self._process_plant_element(
-                        generator, 
+                        generator,
                         plant_polygons=plant_polygons,
-                        country=country, 
+                        country=country,
                         case="excluded_source"
                     )
                     if plant:
@@ -401,7 +404,7 @@ class PowerPlantExtractor:
             else:
                 source_config = self.sources[source_type]
 
-                if source_config.clustering:
+                if self.enable_clustering and source_config.clustering:
                     labels = self._cluster_generators(
                         filtered_generators,
                         source_config.clustering
@@ -420,9 +423,9 @@ class PowerPlantExtractor:
                     if units:
                         for generator in units:
                             plant = self._process_plant_element(
-                                generator, 
+                                generator,
                                 plant_polygons=plant_polygons,
-                                country=country, 
+                                country=country,
                                 case="noise_point"
                             )
                             if plant:
@@ -449,6 +452,19 @@ class PowerPlantExtractor:
                         )
 
                         processed_plants.append(plant)
+                else:
+                    # If clustering is disabled, process each generator individually
+                    for generator in filtered_generators:
+                        plant = self._process_plant_element(
+                            generator,
+                            plant_polygons=plant_polygons,
+                            country=country,
+                            case="individual_generator"
+                        )
+                        if plant:
+                            processed_plants.append(plant)
+                        else:
+                            logger.debug(f"Failed to extract data for generator {generator['id']}")
 
         return processed_plants
 
@@ -576,7 +592,8 @@ class PowerPlantExtractor:
         combined_data = self._combine_cluster_data(country, source_type)
         
         if combined_data.empty:
-            raise ValueError("No data available for the specified country and/or source type")
+            logger.warning(f"No data available for country {country} and source type {source_type}.")
+            return None
 
         fig = go.Figure()
 
