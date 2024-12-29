@@ -12,7 +12,6 @@ from sklearn.cluster import DBSCAN, KMeans
 from hdbscan import HDBSCAN
 from pathlib import Path
 from shapely.geometry import Point, Polygon
-from math import radians, sin, cos, sqrt, atan2
 from .api import OverpassAPI
 from .flow_analysis import FlowAnalyzer
 from .utils import calculate_area, calculate_polygon_centroid
