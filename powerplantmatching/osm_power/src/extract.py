@@ -1,4 +1,3 @@
-from datetime import date
 import pandas as pd
 import numpy as np
 import pycountry
@@ -7,7 +6,6 @@ import inspect
 import yaml
 import re
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass, asdict
 from sklearn.cluster import DBSCAN, KMeans
@@ -17,7 +15,6 @@ from shapely.geometry import Point, Polygon
 from math import radians, sin, cos, sqrt, atan2
 from .api import OverpassAPI
 from .flow_analysis import FlowAnalyzer
-
 
 logger = logging.getLogger(__name__)
 
@@ -59,9 +56,9 @@ class PowerPlantExtractor:
         self.flow_analyzer = FlowAnalyzer()
 
     def get_cache(self):
-        self.cache_ways = self.api._load_cache(self.api.ways_cache, date_check=self.api.date_check)
-        self.cache_relations = self.api._load_cache(self.api.relations_cache, date_check=self.api.date_check)
-        self.cache_nodes = self.api._load_cache(self.api.nodes_cache, date_check=self.api.date_check)
+        self.cache_ways = self.api._load_cache(self.api.ways_cache, date_check=self.date_check)
+        self.cache_relations = self.api._load_cache(self.api.relations_cache, date_check=self.date_check)
+        self.cache_nodes = self.api._load_cache(self.api.nodes_cache, date_check=self.date_check)
 
     def query_cached_element(self, element_type: str, element_id: str) -> Dict:
         try:
@@ -87,16 +84,27 @@ class PowerPlantExtractor:
 
     def load_configurations(self, custom_config: Optional[Dict[str, Any]] = None):
         if custom_config:
-            self.sources = {
-                name: PowerSource(**config)
-                for name, config in custom_config["sources"].items()
-            }
+            self.config = custom_config
         else:
-            with open(self.config_dir / "sources.yaml") as f:
-                self.sources = {
-                    name: PowerSource(**config)
-                    for name, config in yaml.safe_load(f).items()
-                }
+            with open(self.config_dir / "config.yaml") as f:
+                self.config = yaml.safe_load(f)
+
+        self.sources = {
+            name: PowerSource(**config)
+            for name, config in self.config['sources'].items()
+        }
+
+        self.date_check = self.config.get('date_check', False)
+        self.cache_dir = Path(self.config.get('cache_dir', '~/.cache/osm-power')).expanduser()
+        self.force_refresh = self.config.get('force_refresh', False)
+        
+        logging_config = self.config.get('logging', {})
+        logging.basicConfig(level=logging_config.get('level', 'INFO'),
+                            format=logging_config.get('format', '%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+
+        output_config = self.config.get('output', {})
+        self.csv_dir = Path(output_config.get('csv_dir', './output/csv'))
+        self.csv_dir.mkdir(parents=True, exist_ok=True)
 
     def extract_plants(self, countries: List[str], force_refresh: bool = False) -> pd.DataFrame:
         self.gen_out = {}
@@ -106,7 +114,7 @@ class PowerPlantExtractor:
         for country in countries:
             plants_data, generators_data = self.api.get_country_data(
                 country,
-                force_refresh=force_refresh
+                force_refresh=force_refresh if force_refresh else self.force_refresh
             )
 
             self.get_cache()
@@ -131,7 +139,6 @@ class PowerPlantExtractor:
         processed_plants = []
         plant_polygons = []
 
-        # organize elements by type starting with 'relation' then 'way' then 'node'
         plants_data['elements'] = sorted(
             plants_data['elements'], 
             key=lambda x: ['relation', 'way', 'node'].index(x['type'])
@@ -140,10 +147,9 @@ class PowerPlantExtractor:
         ways_in_relations = set()
         ways_rel_mapping = {}
         for element in plants_data['elements']:
-            # Pass the current plant_polygons list
             plant = self._process_plant_element(
                 element, 
-                plant_polygons=plant_polygons,  # Pass the current plant_polygons
+                plant_polygons=plant_polygons,
                 country=country, 
                 case="plants"
             )
@@ -156,7 +162,6 @@ class PowerPlantExtractor:
                     processed_plants.append(plant)
                 elif element['type'] == 'way':
                     if str(element['id']) in ways_in_relations:
-                        # way is in relation. We keep relation and is skipped
                         logger.debug(f"Way {element['id']} is in relation: {ways_rel_mapping[str(element['id'])]}. Skipping...")
                         continue
                     polygon = self._create_polygon(element)
@@ -175,29 +180,22 @@ class PowerPlantExtractor:
     def _process_plant_element(self, element: Dict, plant_polygons: Optional[List[PlantPolygon]] = None, country: Optional[str] = None, case: Optional[str] = None) -> Optional[Plant]:
         flow_path = ["Start Data Collection"]
         
-        # Track element type
         flow_path.append(f"Element Type: {element['type']}")
         
-        # Track power type
         power_type = element.get('tags', {}).get('power')
         flow_path.append(f"Power Type: {power_type}")
         
         if power_type == 'plant':
             flow_path.append("Process as Plant")
             
-            # Track element type for plant
             flow_path.append(f"Plant Element Type: {element['type']}")
             
-            # Track capacity presence
-            has_capacity = False
             capacity, source = self._get_plant_capacity(element)
             if capacity is not None:
-                has_capacity = True
                 flow_path.append("Has Direct Capacity")
             else:
                 flow_path.append("No Direct Capacity")
                 
-                # Track capacity estimation path
                 if element['type'] == 'way':
                     source_type = element.get('tags', {}).get('plant:source')
                     if source_type == 'solar':
@@ -212,9 +210,8 @@ class PowerPlantExtractor:
         elif power_type == 'generator':
             flow_path.append("Process as Generator")
             
-            # Track if inside plant polygon
             coords = self._get_element_coordinates(element)
-            if coords and plant_polygons:  # Check if plant_polygons is provided
+            if coords and plant_polygons:
                 point = Point(coords['lon'], coords['lat'])
                 inside_plant = False
                 for plantpolygon in plant_polygons:
@@ -225,7 +222,6 @@ class PowerPlantExtractor:
                 if not inside_plant:
                     flow_path.append("Outside Plant Polygon")
                     
-                    # Track source type presence
                     source_type = element.get('tags', {}).get('generator:source')
                     if source_type:
                         flow_path.append("Has Source Type")
@@ -236,10 +232,8 @@ class PowerPlantExtractor:
                     else:
                         flow_path.append("No Source Type")
         
-        # Record the flow path
         self.flow_analyzer.add_flow(" -> ".join(flow_path))
         
-        # Original processing logic continues here...
         plant_data = self._extract_plant_data(element, country=country, case=case)
         if not plant_data:
             return None
@@ -436,7 +430,6 @@ class PowerPlantExtractor:
                             else:
                                 logger.debug(f"Failed to extract data for generator {generator['id']}")
 
-                    # Prepare and visualize cluster data
                     viz_data = self.prepare_cluster_visualization_data(filtered_generators, labels)
                     if country not in self.clusters:
                         self.clusters[country] = {}
@@ -637,15 +630,6 @@ class PowerPlantExtractor:
         return pd.concat(combined_data, ignore_index=True) if combined_data else pd.DataFrame()
     
     def summary(self, df: pd.DataFrame = None) -> pd.DataFrame:
-        """
-        Generate a summary of power capacity by country and source.
-        
-        Args:
-            df (pd.DataFrame, optional): The dataframe to summarize. If None, uses the last extracted data.
-        
-        Returns:
-            pd.DataFrame: A summary dataframe with power capacity by country and source, including totals.
-        """
         if df is None:
             if not hasattr(self, 'last_extracted_df'):
                 raise ValueError("No data available. Please run extract_plants() first or provide a dataframe.")
@@ -661,52 +645,26 @@ class PowerPlantExtractor:
         return summary
     
     def get_flow_summary(self) -> pd.DataFrame:
-        """Get a summary of the data processing flows."""
         return self.flow_analyzer.get_summary()
 
     def plot_flow_sankey(self, title: str = "Data Processing Flow") -> go.Figure:
-        """Create a Sankey diagram of the data processing flows."""
         return self.flow_analyzer.plot_sankey(title)
 
     def plot_flow_sunburst(self, title: str = "Data Processing Flow Distribution") -> go.Figure:
-        """Create a sunburst diagram of the data processing flows."""
         return self.flow_analyzer.plot_sunburst(title)
-
-
-def visualize_clusters(data: Dict[str, List], title: str = "Generator Clusters", show: bool = False):
-    fig = go.Figure()
-
-    # Create a scatter plot for each cluster
-    for cluster in set(data['cluster']):
-        cluster_data = [i for i in range(len(data['cluster'])) if data['cluster'][i] == cluster]
-        
-        fig.add_trace(go.Scattermapbox(
-            lat=[data['lat'][i] for i in cluster_data],
-            lon=[data['lon'][i] for i in cluster_data],
-            mode='markers',
-            marker=dict(size=10),
-            text=[f"ID: {data['id'][i]}<br>Capacity: {data['capacity'][i]:.2f} MW" for i in cluster_data],
-            name=f'Cluster {cluster}'
-        ))
-
-    # Update the layout
-    fig.update_layout(
-        title=title,
-        mapbox_style="open-street-map",
-        mapbox=dict(
-            center=dict(lat=np.mean(data['lat']), lon=np.mean(data['lon'])),
-            zoom=10
-        ),
-        showlegend=True
-    )
-
-    if show:
-        fig.show(config={'scrollZoom': True})
-
-    return fig
     
-# Functions
-
+    def save_csv(self, df: Optional[pd.DataFrame] = None, filename: str = "osm_power_plants.csv"):
+        """Save DataFrame to CSV file in the configured directory."""
+        if df is None:
+            if not hasattr(self, 'last_extracted_df'):
+                raise ValueError("No data available. Please run extract_plants() first or provide a dataframe.")
+            df = self.last_extracted_df
+        
+        file_path = self.csv_dir / filename
+        df.to_csv(file_path, index=False)
+        logger.info(f"CSV file saved: {file_path}")
+    
+    
 def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     R = 6371000
 

@@ -15,27 +15,20 @@ class OverpassAPI:
         Initialize the OverpassAPI class.
 
         Args:
-            api_url (str, optional): The URL of the Overpass API. Defaults to https://overpass-api.de/api/interpreter.
+            custom_config (Dict[str, Any], optional): Custom configuration dictionary.
 
         Returns:
             None
         """
-        self.cache_dir = appdirs.user_cache_dir("osm-power")
-        self.raw_dir = os.path.join(self.cache_dir, "raw")
+        self.config = custom_config or {}
+        
+        self.cache_dir = self.config.get('cache_dir', appdirs.user_cache_dir("osm-power"))
+        self.raw_dir = os.path.join(self.cache_dir, "OSM")
         os.makedirs(self.raw_dir, exist_ok=True)
 
-        if custom_config:
-            api_url = custom_config.get("api_url")
-            date_check = custom_config.get("date_check", False)
-        else:
-            api_url = None
-            date_check = False
-
-        if api_url:
-            self.api_url = api_url
-        else:
-            # Default Overpass API endpoint
-            self.api_url = "https://overpass-api.de/api/interpreter"
+        self.api_url = self.config.get('api_url', "https://overpass-api.de/api/interpreter")
+        self.date_check = self.config.get('date_check', False)
+        self.force_refresh = self.config.get('force_refresh', False)
         
         # Cache file paths
         self.plants_cache = os.path.join(self.raw_dir, "plants_power.json")
@@ -43,8 +36,6 @@ class OverpassAPI:
         self.ways_cache = os.path.join(self.raw_dir, "ways_data.json")
         self.nodes_cache = os.path.join(self.raw_dir, "nodes_data.json")
         self.relations_cache = os.path.join(self.raw_dir, "relations_data.json")
-
-        self.date_check = date_check
 
     def _load_cache(self, cache_path: str, date_check: bool = False) -> Optional[Dict[str,Dict]]:
         """Load cached data if it exists."""
