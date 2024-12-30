@@ -12,6 +12,7 @@ from sklearn.cluster import DBSCAN, KMeans
 from hdbscan import HDBSCAN
 from pathlib import Path
 from shapely.geometry import Point, Polygon
+from shapely.ops import unary_union
 from .api import OverpassAPI
 from .flow_analysis import FlowAnalyzer
 from .utils import calculate_area, calculate_polygon_centroid
@@ -146,29 +147,32 @@ class PowerPlantExtractor:
             key=lambda x: ['relation', 'way', 'node'].index(x['type'])
         )
 
-        ways_in_relations = set()
-        ways_rel_mapping = {}
+        self.ways_in_relations = set()
+        self.ways_rel_mapping = {}
         for element in plants_data['elements']:
             plant = self._process_plant_element(
                 element, 
                 plant_polygons=plant_polygons,
-                country=country, 
+                country=country,
                 case="plants"
             )
             if plant:
                 if element['type'] == 'relation':
+                    relation_polygon = self._create_relation_polygon(element)
+                    if relation_polygon:
+                        plant_polygons.append(relation_polygon)
                     for rel_element in element['members']:
                         if rel_element['type'] == 'way':
-                            ways_in_relations.add(str(rel_element['ref']))
-                            ways_rel_mapping[str(rel_element['ref'])] = str(element['id'])
+                            self.ways_in_relations.add(str(rel_element['ref']))
+                            self.ways_rel_mapping[str(rel_element['ref'])] = str(element['id'])
                     processed_plants.append(plant)
                 elif element['type'] == 'way':
-                    if str(element['id']) in ways_in_relations:
-                        logger.debug(f"Way {element['id']} is in relation: {ways_rel_mapping[str(element['id'])]}. Skipping...")
+                    if str(element['id']) in self.ways_in_relations:
+                        logger.debug(f"Way {element['id']} is in relation: {self.ways_rel_mapping[str(element['id'])]}. Skipping...")
                         continue
-                    polygon = self._create_polygon(element)
-                    if polygon:
-                        plant_polygons.append(polygon)
+                    way_polygon = self._create_way_polygon(element)
+                    if way_polygon:
+                        plant_polygons.append(way_polygon)
                     else:
                         logger.debug(f"Failed to create polygon for element {element['id']} of type {element['type']} with nodes {element['nodes']}")
                     processed_plants.append(plant)
@@ -242,7 +246,7 @@ class PowerPlantExtractor:
 
         return Plant(**plant_data) if self._validate_plant_data(plant_data) else None
     
-    def _create_polygon(self, element: Dict) -> Optional[PlantPolygon]:
+    def _create_way_polygon(self, element: Dict) -> Optional[PlantPolygon]:
         way_data = self.query_cached_element('way', str(element['id']))
         if way_data and 'nodes' in way_data:
             coords = []
@@ -256,6 +260,29 @@ class PowerPlantExtractor:
                 return plantpolygon
             else:
                 logger.debug(f"Failed to create polygon for element {element['id']} of type {element['type']} with nodes {element['nodes']}")
+        return None
+    
+    def _create_relation_polygon(self, element: Dict) -> Optional[Polygon]:
+        way_polygons = []
+        for member in element['members']:
+            if member['type'] == 'way':
+                way_data = self.query_cached_element('way', str(member['ref']))
+                if way_data and 'nodes' in way_data:
+                    coords = []
+                    for node_id in way_data['nodes']:
+                        node_data = self.query_cached_element('node', str(node_id))
+                        if node_data:
+                            coords.append((node_data['lon'], node_data['lat']))
+                    if len(coords) >= 3:
+                        way_polygons.append(Polygon(coords))
+                    else:
+                        logger.debug(f"Failed to create polygon for way {member['ref']} of element {element['id']} of type {element['type']} with nodes {way_data['nodes']}")
+        
+        if way_polygons:
+            joint_polygon = unary_union(way_polygons)
+            if joint_polygon.is_valid:
+                plantpolygon = plantpolygon = PlantPolygon(id=str(element['id']), type=element['type'], obj=joint_polygon)
+                return plantpolygon
         return None
     
     def _extract_plant_data(self, element: Dict, country: Optional[str] = None, case: Optional[str] = None) -> Optional[Dict]:
@@ -515,13 +542,17 @@ class PowerPlantExtractor:
     def _filter_generators(self, generators: List[Dict], plant_polygons: List[PlantPolygon]) -> List[Dict]:
         filtered_generators = []
         for generator in generators:
+            if generator['type'] == 'way':
+                if generator['id'] in self.ways_in_relations:
+                    logger.debug(f"Generator '{generator['id']}' is in a relation '{self.ways_rel_mapping[generator['id']]}'. Skipping...")
+                    continue
             coords = self._get_element_coordinates(generator)
             if coords:
                 point = Point(coords['lon'], coords['lat'])
                 outside_flag = True
                 for plantpolygon in plant_polygons:
                     if plantpolygon.obj.contains(point):
-                        logger.debug(f"Generator {generator['id']} is in the plant polygon {plantpolygon.type}/{plantpolygon.id}:{plantpolygon.obj}. Skipping...")
+                        logger.debug(f"Generator {generator['id']} is in the plant polygon {plantpolygon.type}/{plantpolygon.id}. Skipping...")
                         outside_flag = False
                         self.gen_out[generator['id']] = [plantpolygon.id, generator]
                         break

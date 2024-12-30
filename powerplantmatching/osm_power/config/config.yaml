@@ -4,7 +4,7 @@ api_url: "https://overpass-api.de/api/interpreter"
 cache_dir: "~/.cache/osm-power"
 force_refresh: false
 enable_estimation: true
-enable_clustering: false
+enable_clustering: true
 
 # Power source configurations
 sources:
@@ -40,7 +40,7 @@ sources:
 
 # Logging configuration
 logging:
-  level: INFO
+  level: DEBUG
   format: '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 
 # Output configuration
