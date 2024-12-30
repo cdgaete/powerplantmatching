@@ -13,9 +13,49 @@ from hdbscan import HDBSCAN
 from pathlib import Path
 from shapely.geometry import Point, Polygon
 from shapely.ops import unary_union
+from logging.handlers import RotatingFileHandler
 from .api import OverpassAPI
 from .flow_analysis import FlowAnalyzer
 from .utils import calculate_area, calculate_polygon_centroid
+
+def setup_logging(config: Dict[str, Any]) -> None:
+    """Set up logging configuration."""
+    logging_config = config.get('logging', {})
+    log_format = logging_config.get('format', '%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    
+    # Create formatter
+    formatter = logging.Formatter(log_format)
+    
+    # Configure root logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.DEBUG)  # Set to lowest level to allow all handlers
+    
+    # Clear any existing handlers
+    root_logger.handlers = []
+    
+    # Add console handler with INFO level
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(formatter)
+    stream_level = getattr(logging, logging_config.get('stream_level', 'INFO'))
+    console_handler.setLevel(stream_level)
+    root_logger.addHandler(console_handler)
+    
+    # Add file handler if enabled with DEBUG level
+    file_config = logging_config.get('file', {})
+    if file_config.get('enabled', False):
+        log_path = Path(file_config.get('path', './logs/osm_power.log'))
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        file_handler = RotatingFileHandler(
+            filename=log_path,
+            maxBytes=file_config.get('max_size', 10485760),  # Default 10MB
+            backupCount=file_config.get('backup_count', 5),
+            encoding=file_config.get('encoding', 'utf-8')
+        )
+        file_handler.setFormatter(formatter)
+        file_level = getattr(logging, logging_config.get('file_level', 'DEBUG'))
+        file_handler.setLevel(file_level)
+        root_logger.addHandler(file_handler)
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +130,8 @@ class PowerPlantExtractor:
             with open(self.config_dir / "config.yaml") as f:
                 self.config = yaml.safe_load(f)
 
+        setup_logging(self.config)
+
         self.sources = {
             name: PowerSource(**config)
             for name, config in self.config['sources'].items()
@@ -100,10 +142,6 @@ class PowerPlantExtractor:
         self.force_refresh = self.config.get('force_refresh', False)
         self.enable_estimation = self.config.get('enable_estimation', True)
         self.enable_clustering = self.config.get('enable_clustering', True)
-
-        logging_config = self.config.get('logging', {})
-        logging.basicConfig(level=logging_config.get('level', 'INFO'),
-                            format=logging_config.get('format', '%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
 
         output_config = self.config.get('output', {})
         self.csv_dir = Path(output_config.get('csv_dir', './output/csv'))
@@ -548,21 +586,24 @@ class PowerPlantExtractor:
             if generator['type'] == 'way':
                 if generator['id'] in self.ways_in_relations:
                     logger.debug(f"Generator '{generator['id']}' is in a relation '{self.ways_rel_mapping[generator['id']]}'. Skipping...")
+                    self.gen_out[generator['id']] = [plantpolygon.id, generator]
                     continue
             coords = self._get_element_coordinates(generator)
+            continue_flag = False
             if coords:
                 point = Point(coords['lon'], coords['lat'])
-                outside_flag = True
                 for plantpolygon in plant_polygons:
                     if plantpolygon.obj.contains(point):
                         logger.debug(f"Generator {generator['id']} is in the plant polygon {plantpolygon.type}/{plantpolygon.id}. Skipping...")
-                        outside_flag = False
+                        continue_flag = True
                         self.gen_out[generator['id']] = [plantpolygon.id, generator]
                         break
-                if outside_flag:
-                    filtered_generators.append(generator)
             else:
-                logger.debug(f"Failed to get coordinates for generator {generator['id']}")
+                continue_flag = True
+                logger.debug(f"Failed to get coordinates for generator {generator['id']}. Skipping...")
+            if continue_flag:
+                continue
+            filtered_generators.append(generator)
         return filtered_generators
 
     @staticmethod
