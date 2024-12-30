@@ -194,24 +194,23 @@ class PowerPlantExtractor:
         if power_type == 'plant':
             flow_path.append("Process as Plant")
             
-            flow_path.append(f"Plant Element Type: {element['type']}")
-            
             capacity, source = self._get_plant_capacity(element)
             if capacity is not None:
-                flow_path.append("Has Direct Capacity")
+                flow_path.append("Direct Capacity Available")
             else:
                 flow_path.append("No Direct Capacity")
                 
-                if element['type'] == 'way':
+                if self.enable_estimation:
                     source_type = element.get('tags', {}).get('plant:source')
-                    if source_type == 'solar':
-                        flow_path.append("Solar Area Estimation")
-                    elif source_type == 'wind':
-                        flow_path.append("Wind Default Value")
+                    if source_type in self.sources:
+                        if self.sources[source_type].estimation:
+                            flow_path.append("Capacity Estimation Applied")
+                        else:
+                            flow_path.append("No Estimation Method Available")
                     else:
-                        flow_path.append("No Capacity Available")
-                elif element['type'] == 'relation':
-                    flow_path.append("Check Member Elements")
+                        flow_path.append("Source Type Not Configured")
+                else:
+                    flow_path.append("Estimation Disabled")
                     
         elif power_type == 'generator':
             flow_path.append("Process as Generator")
@@ -233,6 +232,10 @@ class PowerPlantExtractor:
                         flow_path.append("Has Source Type")
                         if source_type in self.sources:
                             flow_path.append("Source in Config")
+                            if self.enable_clustering and self.sources[source_type].clustering:
+                                flow_path.append("Clustering Enabled")
+                            else:
+                                flow_path.append("Clustering Disabled")
                         else:
                             flow_path.append("Source not in Config")
                     else:
