@@ -5,11 +5,9 @@ import logging
 import inspect
 import yaml
 import re
-import plotly.graph_objects as go
 from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass, asdict
-from sklearn.cluster import DBSCAN, KMeans
-from hdbscan import HDBSCAN
+from sklearn.cluster import DBSCAN
 from pathlib import Path
 from shapely.geometry import Point, Polygon
 from shapely.ops import unary_union
@@ -83,6 +81,7 @@ class Plant:
     name: Optional[str] = None
     generator_count: Optional[int] = None
     case: Optional[str] = None
+    technology: Optional[str] = None
 
     def to_dict(self):
         return {k: v for k, v in asdict(self).items() if v is not None}
@@ -145,7 +144,6 @@ class PowerPlantExtractor:
 
         output_config = self.config.get('output', {})
         self.csv_dir = Path(output_config.get('csv_dir', './output/csv'))
-        self.csv_dir.mkdir(parents=True, exist_ok=True)
 
     def extract_plants(self, countries: List[str], force_refresh: bool = False) -> pd.DataFrame:
         self.gen_out = {}
@@ -228,7 +226,6 @@ class PowerPlantExtractor:
         
         power_type = element.get('tags', {}).get('power')
         flow_path.append(f"Power Type: {power_type}")
-        
         if power_type == 'plant':
             flow_path.append("Process as Plant")
             
@@ -284,7 +281,7 @@ class PowerPlantExtractor:
         plant_data = self._extract_plant_data(element, country=country, case=case)
         if not plant_data:
             return None
-
+        
         return Plant(**plant_data) if self._validate_plant_data(plant_data) else None
     
     def _create_way_polygon(self, element: Dict) -> Optional[PlantPolygon]:
@@ -330,10 +327,12 @@ class PowerPlantExtractor:
         plant_data = {
             'id': element['id'],
             'type': f"{element["tags"]["power"]}:{element['type']}",
-            'source': element.get('tags', {}).get('plant:source', None) or element.get('tags', {}).get('generator:source', None),
+            'source': element.get('tags', {}).get('plant:source') or element.get('tags', {}).get('generator:source'),
             'name': element.get('tags', {}).get('name'),
             'country': country,
             'case': case,
+            'technology': element.get('tags', {}).get('plant:method', element.get('tags', {}).get('plant:type')) or 
+            element.get('tags', {}).get('generator:method', element.get('tags', {}).get('generator:type'))
         }
 
         coords = self._get_element_coordinates(element)
@@ -569,7 +568,8 @@ class PowerPlantExtractor:
             capacity_source='aggregated',
             generator_count=len(cluster),
             name=f"cluster_{str(index).zfill(3)}_{country}_{source_type}",
-            case=case
+            case=case,
+            technology=cluster[0].get('tags', {}).get('generator:method', cluster[0].get('tags', {}).get('generator:type', '')),
         )
 
     def _group_generators_by_type(self, generators: List[Dict]) -> Dict[str, List[Dict]]:
@@ -631,12 +631,8 @@ class PowerPlantExtractor:
         
         coords = np.array(arrays)
 
-        if clustering_config['method'] == 'kmeans':
-            clustering = self._cluster_fn(KMeans, coords, clustering_config)
-        elif clustering_config['method'] == 'dbscan':
+        if clustering_config['method'] == 'dbscan':
             clustering = self._cluster_fn(DBSCAN, coords, clustering_config)
-        elif clustering_config['method'] == 'hdbscan':
-            clustering = self._cluster_fn(HDBSCAN, coords, clustering_config)
         else:
             raise ValueError(f"Unknown clustering method: {clustering_config['method']}")
         
@@ -664,6 +660,13 @@ class PowerPlantExtractor:
         return data
     
     def plot_clusters(self, country: str = 'all', source_type: str = 'all', show: bool = False):
+        try:
+            import plotly
+            go = plotly.graph_objs
+        except ImportError:
+            logger.warning("Plotly is not installed. Skipping cluster visualization.")
+            return None
+        
         combined_data = self._combine_cluster_data(country, source_type)
         
         if combined_data.empty:
@@ -739,10 +742,10 @@ class PowerPlantExtractor:
     def get_flow_summary(self) -> pd.DataFrame:
         return self.flow_analyzer.get_summary()
 
-    def plot_flow_sankey(self, title: str = "Data Processing Flow") -> go.Figure:
+    def plot_flow_sankey(self, title: str = "Data Processing Flow"):
         return self.flow_analyzer.plot_sankey(title)
 
-    def plot_flow_sunburst(self, title: str = "Data Processing Flow Distribution") -> go.Figure:
+    def plot_flow_sunburst(self, title: str = "Data Processing Flow Distribution"):
         return self.flow_analyzer.plot_sunburst(title)
     
     def save_csv(self, df: Optional[pd.DataFrame] = None, filename: str = "osm_power_plants.csv"):
@@ -752,10 +755,13 @@ class PowerPlantExtractor:
                 raise ValueError("No data available. Please run extract_plants() first or provide a dataframe.")
             df = self.last_extracted_df
         
+        # Create the directory only when actually saving data
+        self.csv_dir.mkdir(parents=True, exist_ok=True)
+        
         file_path = self.csv_dir / filename
         df.to_csv(file_path, index=False)
         logger.info(f"CSV file saved: {file_path}")
-    
+        
 
 def main():
     extractor = PowerPlantExtractor()

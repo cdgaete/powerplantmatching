@@ -10,13 +10,10 @@ enable_clustering: true
 sources:
   solar:
     clustering:
-      method: hdbscan
-      to_radians: true
-      metric: haversine
-      cluster_selection_epsilon: 0.00000785
-      min_cluster_size: 5
-      cluster_selection_method: eom
-      core_dist_n_jobs: 4
+      method: dbscan
+      to_radians: false
+      eps: 0.003
+      min_samples: 2
     estimation:
       method: area_based
       efficiency: 150  # W/m2
@@ -56,26 +53,6 @@ output:
 
 # Algorithm parameters (for reference)
 algorithm_params:
-  hdbscan:
-    - min_cluster_size
-    - min_samples
-    - cluster_selection_epsilon
-    - max_cluster_size
-    - metric
-    - alpha
-    - p
-    - algorithm
-    - leaf_size
-    - memory
-    - approx_min_span_tree
-    - gen_min_span_tree
-    - core_dist_n_jobs
-    - cluster_selection_method
-    - allow_single_cluster
-    - prediction_data
-    - branch_detection_data
-    - match_reference_implementation
-    - cluster_selection_epsilon_max
   dbscan:
     - eps
     - min_samples
@@ -85,13 +62,5 @@ algorithm_params:
     - leaf_size
     - p
     - n_jobs
-  kmeans:
-    - n_clusters
-    - init
-    - n_init
-    - max_iter
-    - tol
-    - verbose
-    - random_state
-    - copy_x
-    - algorithm
+
+# In the future can be implemented HDBSCAN or KMeans. Currently only DBSCAN shows best results

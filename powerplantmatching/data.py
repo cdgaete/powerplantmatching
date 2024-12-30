@@ -44,7 +44,7 @@ from .utils import (
     get_raw_file,
     set_column_name,
 )
-# from .osm_power.src.extract import PowerDataExtractor
+from .osm_power.src.extract import PowerPlantExtractor
 
 logger = logging.getLogger(__name__)
 cget = pycountry.countries.get
@@ -2172,8 +2172,8 @@ def OSM(raw=False, update=False, config=None):
     countries = config['target_countries']
     
     # Initialize extractor and get data for all target countries
-    extractor = PowerDataExtractor()
-    osm_df = extractor.extract_data(countries)
+    extractor = PowerPlantExtractor()
+    osm_df = extractor.extract_plants(countries)  # Extract data for target countries
     
     if raw:
         return osm_df
@@ -2211,19 +2211,23 @@ def OSM(raw=False, update=False, config=None):
         'steam_turbine': 'Steam Turbine',
         'gas_turbine': 'OCGT',
         'photovoltaic': 'PV',
-        'concentrated_solar': 'CSP'
+        'concentrated_solar': 'CSP',
+        'run-of-the-river': 'Run-Of-River',
+        'thermal;photovoltaic': 'PV',
+        'photovoltaic;wind_turbine': 'PV',
+        'francis_turbine': 'Reservoir',
+        'pelton_turbine': 'Reservoir',
     }
     
     # Create new DataFrame with powerplantmatching format
     df = pd.DataFrame({
         'Name': osm_df.id.astype(str),
         'projectID': "OSM-" + osm_df.id.astype(str),
-        'Fueltype': osm_df['generator:source'].fillna(osm_df['plant:source']).map(fueltype_map),
-        'Technology': osm_df['generator:method'].fillna(osm_df['plant:method']).map(technology_map),
+        'Fueltype': "update",
+        'Technology': "update",
         'Set': np.nan,
-        'Country': osm_df.country_code,
-        'Capacity': osm_df['generator:output:electricity_value'].fillna(
-                        osm_df['plant:output:electricity_value']),
+        'Country': osm_df.country,
+        'Capacity': osm_df['output:electricity_value'],
         'lat': osm_df.lat,
         'lon': osm_df.lon,
         # Add empty columns required by powerplantmatching
