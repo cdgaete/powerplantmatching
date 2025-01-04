@@ -1,44 +1,36 @@
-import os
-import re
-import yaml
+import inspect
 import json
 import logging
-import inspect
-import requests
-import pycountry
-import pandas as pd
-import numpy as np
-from pathlib import Path
+import os
+import re
+from dataclasses import asdict, dataclass
 from datetime import datetime
-from dataclasses import dataclass, asdict
-from sklearn.cluster import DBSCAN
-from shapely.ops import unary_union
-from shapely.geometry import Point, Polygon
-from math import radians, sin, cos, sqrt, atan2
-from typing import Dict, Optional, List, Tuple, Set, Any
+from math import atan2, cos, radians, sin, sqrt
+from typing import Any, Dict, List, Optional, Set, Tuple  # noqa
 
+import numpy as np
+import pandas as pd
+import pycountry
+import requests
+from shapely.geometry import Point, Polygon
+from shapely.ops import unary_union
+from sklearn.cluster import DBSCAN
+
+from .core import _data_in, get_config
 
 logger = logging.getLogger(__name__)
 
 class OverpassAPI:
-    def __init__(self, custom_config: Optional[Dict[str, Any]] = None):
-        """
-        Initialize the OverpassAPI class.
-
-        Args:
-            custom_config (Dict[str, Any], optional): Custom configuration dictionary.
-
-        Returns:
-            None
-        """
-        self.config = custom_config or {}
+    def __init__(self, filename: Optional[str] = None, custom_config: Optional[Dict[str, Any]] = None):
+        self.config = get_config(filename=filename, **custom_config)
+        osm_config = self.config.get('OSM', {})
         
-        self.osm_cache = "PENDING"
+        self.osm_cache = _data_in("osm_cache")
         os.makedirs(self.osm_cache, exist_ok=True)
 
-        self.api_url = self.config.get('api_url', "https://overpass-api.de/api/interpreter")
-        self.date_check = self.config.get('date_check', False)
-        self.force_refresh = self.config.get('force_refresh', False)
+        self.api_url = osm_config.get('api_url', "https://overpass-api.de/api/interpreter")
+        self.date_check = osm_config.get('date_check', False)
+        self.force_refresh = osm_config.get('force_refresh', False)
         
         # Cache file paths
         self.plants_cache = os.path.join(self.osm_cache, "plants_power.json")
@@ -47,13 +39,13 @@ class OverpassAPI:
         self.nodes_cache = os.path.join(self.osm_cache, "nodes_data.json")
         self.relations_cache = os.path.join(self.osm_cache, "relations_data.json")
 
-    def _load_cache(self, cache_path: str, date_check: bool = False) -> Optional[Dict[str,Dict]]:
+    def _load_cache(self, cache_path: str) -> Optional[Dict[str,Dict]]:
         """Load cached data if it exists."""
         if os.path.exists(cache_path):
             try:
-                with open(cache_path, 'r') as f:
+                with open(cache_path) as f:
                     cached = json.load(f)
-                    if date_check:
+                    if self.date_check:
                         # Check cache date
                         if cached.get('timestamp'):
                             cache_date = datetime.fromisoformat(cached['timestamp']).date()
@@ -86,7 +78,7 @@ class OverpassAPI:
         
         # Load cache
         if not force_refresh:
-            cached = self._load_cache(self.plants_cache, self.date_check)
+            cached = self._load_cache(self.plants_cache)
             if cached and country_code in cached['data']:
                 return cached['data'][country_code]
 
@@ -108,7 +100,7 @@ class OverpassAPI:
             data = response.json()
             
             # Update cache
-            cached = self._load_cache(self.plants_cache, self.date_check) or {'data': {}}
+            cached = self._load_cache(self.plants_cache) or {'data': {}}
             cached['data'][country_code] = data
             self._save_cache(self.plants_cache, cached['data'])
             
@@ -122,7 +114,7 @@ class OverpassAPI:
         
         # Load cache
         if not force_refresh:
-            cached = self._load_cache(self.generators_cache, self.date_check)
+            cached = self._load_cache(self.generators_cache)
             if cached and country_code in cached['data']:
                 return cached['data'][country_code]
 
@@ -144,7 +136,7 @@ class OverpassAPI:
             data = response.json()
             
             # Update cache
-            cached = self._load_cache(self.generators_cache, self.date_check) or {'data': {}}
+            cached = self._load_cache(self.generators_cache) or {'data': {}}
             cached['data'][country_code] = data
             self._save_cache(self.generators_cache, cached['data'])
             
@@ -154,7 +146,7 @@ class OverpassAPI:
 
     def get_nodes_data(self, node_ids: List[int]) -> Dict:
         """Get data for a list of nodes."""
-        nodes_cached = self._load_cache(self.nodes_cache, self.date_check) or {'data': {}}
+        nodes_cached = self._load_cache(self.nodes_cache) or {'data': {}}
         
         # Filter out already cached nodes
         nodes_to_fetch = [
@@ -196,8 +188,8 @@ class OverpassAPI:
     def get_ways_data(self, way_ids: List[int]) -> Tuple[Dict, Set[int]]:
         """Get full data for a list of ways in a single query."""
         # Load cache
-        ways_cached = self._load_cache(self.ways_cache, self.date_check) or {'data': {}}
-        nodes_cached = self._load_cache(self.nodes_cache, self.date_check) or {'data': {}}
+        ways_cached = self._load_cache(self.ways_cache) or {'data': {}}
+        nodes_cached = self._load_cache(self.nodes_cache) or {'data': {}}
         
         # Filter out already cached ways
         ways_to_fetch = [
@@ -251,9 +243,9 @@ class OverpassAPI:
     
     def get_relations_data(self, relation_ids: List[int]) -> Dict:
         """Get data for a list of relations."""
-        relations_cached = self._load_cache(self.relations_cache, self.date_check) or {'data': {}}
-        ways_cached = self._load_cache(self.ways_cache, self.date_check) or {'data': {}}
-        nodes_cached = self._load_cache(self.nodes_cache, self.date_check) or {'data': {}}
+        relations_cached = self._load_cache(self.relations_cache) or {'data': {}}
+        ways_cached = self._load_cache(self.ways_cache) or {'data': {}}
+        nodes_cached = self._load_cache(self.nodes_cache) or {'data': {}}
         
         # Filter out already cached relations
         relations_to_fetch = [
@@ -356,8 +348,8 @@ class OverpassAPI:
         # If no countries specified, return all cached data
         if countries is None or len(countries) == 0:
             # Load cached data
-            plants_cached = self._load_cache(self.plants_cache, self.date_check)
-            generators_cached = self._load_cache(self.generators_cache, self.date_check)
+            plants_cached = self._load_cache(self.plants_cache)
+            generators_cached = self._load_cache(self.generators_cache)
 
             if not any([plants_cached, generators_cached]):
                 raise ValueError("No cached data available and no countries specified")
@@ -424,16 +416,26 @@ class Plant:
         return {k: v for k, v in asdict(self).items() if v is not None}
 
 class PowerPlantExtractor:
-    def __init__(self, config_dir: Optional[Path] = None, custom_config: Optional[Dict[str, Any]] = None):
-        self.config_dir = config_dir or Path(__file__).parent.parent / "package_data"
-        self.load_configurations(custom_config=custom_config)
-        self.api = OverpassAPI(custom_config=custom_config)
+    def __init__(self, filename: Optional[str] = None, custom_config: Dict[str, Any] = {}):
+        self.config = get_config(filename=filename, **custom_config)
+        self.load_configurations()
+        self.api = OverpassAPI(filename=filename, custom_config=self.config)
         self.clusters = {}
+        
+    def load_configurations(self):
+        osm_config = self.config.get('OSM', {})
+        self.sources = {
+            name: PowerSource(**config)
+            for name, config in osm_config.get('sources', {}).items()
+        }
+
+        self.enable_estimation = osm_config.get('enable_estimation', False)
+        self.enable_clustering = osm_config.get('enable_clustering', False)        
 
     def get_cache(self):
-        self.cache_ways = self.api._load_cache(self.api.ways_cache, date_check=self.date_check)
-        self.cache_relations = self.api._load_cache(self.api.relations_cache, date_check=self.date_check)
-        self.cache_nodes = self.api._load_cache(self.api.nodes_cache, date_check=self.date_check)
+        self.cache_ways = self.api._load_cache(self.api.ways_cache)
+        self.cache_relations = self.api._load_cache(self.api.relations_cache)
+        self.cache_nodes = self.api._load_cache(self.api.nodes_cache)
 
     def query_cached_element(self, element_type: str, element_id: str) -> Dict:
         try:
@@ -457,27 +459,6 @@ class PowerPlantExtractor:
         except Exception as e:
             raise ValueError(f"Error querying element {element_id}: {str(e)}")
 
-    def load_configurations(self, custom_config: Optional[Dict[str, Any]] = None):
-        if custom_config:
-            self.config = custom_config
-        else:
-            with open(self.config_dir / "config.yaml") as f:
-                self.config = yaml.safe_load(f)
-
-        self.sources = {
-            name: PowerSource(**config)
-            for name, config in self.config['OSM']['sources'].items()
-        }
-
-        self.date_check = self.config.get('date_check', False)
-        self.cache_dir = Path(self.config.get('cache_dir', '~/.cache/osm-power')).expanduser()
-        self.force_refresh = self.config.get('force_refresh', False)
-        self.enable_estimation = self.config.get('enable_estimation', True)
-        self.enable_clustering = self.config.get('enable_clustering', True)
-
-        output_config = self.config.get('output', {})
-        self.csv_dir = Path(output_config.get('csv_dir', './output/csv'))
-
     def extract_plants(self, countries: List[str], force_refresh: bool = False) -> pd.DataFrame:
         self.clusters = {}
         all_plants = []
@@ -485,13 +466,13 @@ class PowerPlantExtractor:
         for country in countries:
             plants_data, generators_data = self.api.get_country_data(
                 country,
-                force_refresh=force_refresh if force_refresh else self.force_refresh
+                force_refresh=force_refresh if force_refresh else self.config['OSM']['force_refresh']
             )
 
             self.get_cache()
 
             country_obj = pycountry.countries.lookup(country)
-  
+    
             primary_plants, plant_polygons = self._process_plants(plants_data, country=country_obj.name)
 
             secondary_plants = self._process_generators(generators_data, plant_polygons, country=country_obj.name)
@@ -504,7 +485,6 @@ class PowerPlantExtractor:
         self.last_extracted_df = df
 
         return df
-
     def _process_plants(self, plants_data: Dict, country: Optional[str] = None) -> Tuple[List[Plant], List[PlantPolygon]]:
         processed_plants = []
         plant_polygons = []
@@ -590,9 +570,17 @@ class PowerPlantExtractor:
                         logger.debug(f"Failed to create polygon for way {member['ref']} of element {element['id']} of type {element['type']} with nodes {way_data['nodes']}")
         
         if way_polygons:
+            for way_polygon in way_polygons:
+                if not way_polygon.is_valid:
+                    logger.debug(f"Polygon for way {way_polygon} is not valid")
+                    way_polygons.remove(way_polygon)
+                    
+            if len(way_polygons) == 1:
+                return PlantPolygon(id=str(element['id']), type=element['type'], obj=way_polygons[0])
+            
             joint_polygon = unary_union(way_polygons)
             if joint_polygon.is_valid:
-                plantpolygon = plantpolygon = PlantPolygon(id=str(element['id']), type=element['type'], obj=joint_polygon)
+                plantpolygon = PlantPolygon(id=str(element['id']), type=element['type'], obj=joint_polygon)
                 return plantpolygon
         return None
     

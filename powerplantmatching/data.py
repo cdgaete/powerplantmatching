@@ -37,6 +37,7 @@ from .cleaning import (
 )
 from .core import _package_data, get_config
 from .heuristics import scale_to_net_capacities
+from .osm import PowerPlantExtractor
 from .utils import (
     config_filter,
     convert_to_short_name,
@@ -44,7 +45,6 @@ from .utils import (
     get_raw_file,
     set_column_name,
 )
-from .osm import PowerPlantExtractor
 
 logger = logging.getLogger(__name__)
 cget = pycountry.countries.get
@@ -2164,20 +2164,39 @@ def OSM(raw=False, update=False, config=None):
         Power plant data from OpenStreetMap formatted according to 
         powerplantmatching standards
     """
-    
     if config is None:
         config = get_config()
+    else:
+        config = get_config(**config)
 
+    # Get stored csv osm data. Never update (download from url only if needed), if the file does not exist
+    fn = get_raw_file("OSM", update=False, config=config)
+    
     # Get target countries from config
     countries = config['target_countries']
     
-    # Initialize extractor and get data for all target countries
-    extractor = PowerPlantExtractor()
-    osm_df = extractor.extract_plants(countries)  # Extract data for target countries
+    # Check if we need to update the data
+    update_needed = update
     
-    if raw:
-        return osm_df
+    # If the file exists and no update is needed, check if all countries are present
+    if not update_needed and os.path.exists(fn):
+        df = pd.read_csv(fn)
+        update_needed = not set(countries).issubset(df['country'].unique())
+    
+    if update_needed:
+        extractor = PowerPlantExtractor(custom_config=config)
+        df = extractor.extract_plants(countries, force_refresh=update)
+        # replace data of requested countries while other countries are kept
+        full_df = pd.read_csv(fn)
+        df = pd.concat([df, full_df[~full_df['country'].isin(countries)]], ignore_index=True)
+        df.to_csv(fn, index=False)
+    else:
+        full_df = pd.read_csv(fn)
+        df = full_df[full_df['country'].isin(countries)]
         
+    if raw:
+        return df
+
     # Map OSM generator:source/plant:source to powerplantmatching fueltypes
     fueltype_map = {
         'nuclear': 'Nuclear',
@@ -2218,30 +2237,33 @@ def OSM(raw=False, update=False, config=None):
         'francis_turbine': 'Reservoir',
         'pelton_turbine': 'Reservoir',
     }
-    
-    # Create new DataFrame with powerplantmatching format
-    df = pd.DataFrame({
-        'Name': osm_df.id.astype(str),
-        'projectID': "OSM-" + osm_df.id.astype(str),
-        'Fueltype': "update",
-        'Technology': "update",
-        'Set': np.nan,
-        'Country': osm_df.country,
-        'Capacity': osm_df['output:electricity_value'],
-        'lat': osm_df.lat,
-        'lon': osm_df.lon,
-        # Add empty columns required by powerplantmatching
-        'Efficiency': np.nan,
-        'DateIn': np.nan,
-        'DateRetrofit': np.nan,
-        'DateOut': np.nan,
-        'Duration': np.nan,
-        'Volume_Mm3': np.nan,
-        'DamHeight_m': np.nan,
-        'StorageCapacity_MWh': np.nan
+
+    df['Fueltype'] = df['source'].map(fueltype_map)
+    df['Technology'] = df['technology'].map(technology_map)
+
+    # Rename columns to match powerplantmatching standards
+    df = df.rename(columns={
+        'id': 'projectID',
+        'name': 'Name',
+        'capacity_mw': 'Capacity',
+        'country': 'Country',
+        'lat': 'lat',
+        'lon': 'lon',
     })
+
+    # Select only the columns we need
+    columns = config['target_columns']
+    # there are some target columns that are not present in the df. Add all missing columns with nan
+    for col in columns:
+        if col not in df.columns:
+            df[col] = np.nan
+
+    df = df[columns]
     
-    return df
+    # filter name not nan and capacity not nan
+    df = df[~df['Name'].isna() & ~df['Capacity'].isna()]
+    
+    return df.pipe(set_column_name, 'OSM').pipe(config_filter, config)
 
 
 # deprecated alias for GGPT

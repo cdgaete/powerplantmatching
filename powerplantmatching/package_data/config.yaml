@@ -205,15 +205,15 @@ GHPT:
 OSM:
   reliability_score: 3
   net_capacity: true
-  api_url: "https://overpass-api.de/api/interpreter"  # Default Overpass API endpoint
+  api_url: https://overpass-api.de/api/interpreter  # Default Overpass API endpoint
   fn: osm_data.csv # Filename for saving OSM data
   url: https://raw.githubusercontent.com/pypsa-meets-earth/ppm-data-backup/main/osm_data.csv # URL for downloading OSM data
 
   # Global configuration
-  date_check: true
+  date_check: false
   force_refresh: false
-  enable_estimation: true
-  enable_clustering: true
+  enable_estimation: false
+  enable_clustering: false
 
   # Power source configurations
   sources:
