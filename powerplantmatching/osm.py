@@ -1,61 +1,398 @@
-import pandas as pd
-import numpy as np
-import pycountry
+import os
+import re
+import yaml
+import json
 import logging
 import inspect
-import yaml
-import re
-from typing import Dict, List, Optional, Any, Tuple
+import requests
+import pycountry
+import pandas as pd
+import numpy as np
+from pathlib import Path
+from datetime import datetime
 from dataclasses import dataclass, asdict
 from sklearn.cluster import DBSCAN
-from pathlib import Path
-from shapely.geometry import Point, Polygon
 from shapely.ops import unary_union
-from logging.handlers import RotatingFileHandler
-from .api import OverpassAPI
-from .flow_analysis import FlowAnalyzer
-from .utils import calculate_area, calculate_polygon_centroid
+from shapely.geometry import Point, Polygon
+from math import radians, sin, cos, sqrt, atan2
+from typing import Dict, Optional, List, Tuple, Set, Any
 
-def setup_logging(config: Dict[str, Any]) -> None:
-    """Set up logging configuration."""
-    logging_config = config.get('logging', {})
-    log_format = logging_config.get('format', '%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    
-    # Create formatter
-    formatter = logging.Formatter(log_format)
-    
-    # Configure root logger
-    root_logger = logging.getLogger()
-    root_logger.setLevel(logging.DEBUG)  # Set to lowest level to allow all handlers
-    
-    # Clear any existing handlers
-    root_logger.handlers = []
-    
-    # Add console handler with INFO level
-    console_handler = logging.StreamHandler()
-    console_handler.setFormatter(formatter)
-    stream_level = getattr(logging, logging_config.get('stream_level', 'INFO'))
-    console_handler.setLevel(stream_level)
-    root_logger.addHandler(console_handler)
-    
-    # Add file handler if enabled with DEBUG level
-    file_config = logging_config.get('file', {})
-    if file_config.get('enabled', False):
-        log_path = Path(file_config.get('path', './logs/osm_power.log'))
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        file_handler = RotatingFileHandler(
-            filename=log_path,
-            maxBytes=file_config.get('max_size', 10485760),  # Default 10MB
-            backupCount=file_config.get('backup_count', 5),
-            encoding=file_config.get('encoding', 'utf-8')
-        )
-        file_handler.setFormatter(formatter)
-        file_level = getattr(logging, logging_config.get('file_level', 'DEBUG'))
-        file_handler.setLevel(file_level)
-        root_logger.addHandler(file_handler)
 
 logger = logging.getLogger(__name__)
+
+class OverpassAPI:
+    def __init__(self, custom_config: Optional[Dict[str, Any]] = None):
+        """
+        Initialize the OverpassAPI class.
+
+        Args:
+            custom_config (Dict[str, Any], optional): Custom configuration dictionary.
+
+        Returns:
+            None
+        """
+        self.config = custom_config or {}
+        
+        self.osm_cache = "PENDING"
+        os.makedirs(self.osm_cache, exist_ok=True)
+
+        self.api_url = self.config.get('api_url', "https://overpass-api.de/api/interpreter")
+        self.date_check = self.config.get('date_check', False)
+        self.force_refresh = self.config.get('force_refresh', False)
+        
+        # Cache file paths
+        self.plants_cache = os.path.join(self.osm_cache, "plants_power.json")
+        self.generators_cache = os.path.join(self.osm_cache, "generators_power.json")
+        self.ways_cache = os.path.join(self.osm_cache, "ways_data.json")
+        self.nodes_cache = os.path.join(self.osm_cache, "nodes_data.json")
+        self.relations_cache = os.path.join(self.osm_cache, "relations_data.json")
+
+    def _load_cache(self, cache_path: str, date_check: bool = False) -> Optional[Dict[str,Dict]]:
+        """Load cached data if it exists."""
+        if os.path.exists(cache_path):
+            try:
+                with open(cache_path, 'r') as f:
+                    cached = json.load(f)
+                    if date_check:
+                        # Check cache date
+                        if cached.get('timestamp'):
+                            cache_date = datetime.fromisoformat(cached['timestamp']).date()
+                            if cache_date.month == datetime.now().month:
+                                return cached
+                    return cached
+            except (json.JSONDecodeError, KeyError):
+                return None
+        return None
+
+    def _save_cache(self, cache_path: str, data: Dict):
+        """Save data to cache."""
+        with open(cache_path, 'w') as f:
+            json.dump({
+                'timestamp': datetime.now().isoformat(),
+                'data': data
+            }, f, indent=2)
+
+    def get_country_code(self, country: str) -> str:
+        """Get country code from country name."""
+        try:
+            country_obj = pycountry.countries.lookup(country)
+            return country_obj.alpha_2
+        except LookupError:
+            raise ValueError(f"Invalid country name: {country}")
+
+    def get_plants_data(self, country: str, force_refresh: bool = False) -> Dict:
+        """Get power plant data for a country."""
+        country_code = self.get_country_code(country)
+        
+        # Load cache
+        if not force_refresh:
+            cached = self._load_cache(self.plants_cache, self.date_check)
+            if cached and country_code in cached['data']:
+                return cached['data'][country_code]
+
+        # Power plants query
+        query = f"""
+        [out:json][timeout:300];
+        area["ISO3166-1"="{country_code}"][admin_level=2]->.boundaryarea;
+        (
+            node["power"="plant"](area.boundaryarea);
+            way["power"="plant"](area.boundaryarea);
+            relation["power"="plant"](area.boundaryarea);
+        );
+        out body;
+        """
+
+        try:
+            response = requests.post(self.api_url, data={'data': query})
+            response.raise_for_status()
+            data = response.json()
+            
+            # Update cache
+            cached = self._load_cache(self.plants_cache, self.date_check) or {'data': {}}
+            cached['data'][country_code] = data
+            self._save_cache(self.plants_cache, cached['data'])
+            
+            return data
+        except requests.RequestException as e:
+            raise ConnectionError(f"Failed to fetch plants data: {str(e)}")
+
+    def get_generators_data(self, country: str, force_refresh: bool = False) -> Dict:
+        """Get power generator data for a country."""
+        country_code = self.get_country_code(country)
+        
+        # Load cache
+        if not force_refresh:
+            cached = self._load_cache(self.generators_cache, self.date_check)
+            if cached and country_code in cached['data']:
+                return cached['data'][country_code]
+
+        # Power generators query
+        query = f"""
+        [out:json][timeout:300];
+        area["ISO3166-1"="{country_code}"][admin_level=2]->.boundaryarea;
+        (
+            node["power"="generator"](area.boundaryarea);
+            way["power"="generator"](area.boundaryarea);
+            relation["power"="generator"](area.boundaryarea);
+        );
+        out body;
+        """
+
+        try:
+            response = requests.post(self.api_url, data={'data': query})
+            response.raise_for_status()
+            data = response.json()
+            
+            # Update cache
+            cached = self._load_cache(self.generators_cache, self.date_check) or {'data': {}}
+            cached['data'][country_code] = data
+            self._save_cache(self.generators_cache, cached['data'])
+            
+            return data
+        except requests.RequestException as e:
+            raise ConnectionError(f"Failed to fetch generators data: {str(e)}")
+
+    def get_nodes_data(self, node_ids: List[int]) -> Dict:
+        """Get data for a list of nodes."""
+        nodes_cached = self._load_cache(self.nodes_cache, self.date_check) or {'data': {}}
+        
+        # Filter out already cached nodes
+        nodes_to_fetch = [
+            node_id for node_id in node_ids 
+            if str(node_id) not in nodes_cached['data']
+        ]
+        
+        if nodes_to_fetch:
+            # Build query for multiple nodes
+            nodes_str = ','.join(map(str, nodes_to_fetch))
+            query = f"""
+            [out:json][timeout:300];
+            node(id:{nodes_str});
+            out body;
+            """
+
+            try:
+                response = requests.post(self.api_url, data={'data': query})
+                response.raise_for_status()
+                new_data = response.json()
+                
+                # Process nodes
+                for element in new_data['elements']:
+                    if element['type'] == 'node':
+                        nodes_cached['data'][str(element['id'])] = element
+                
+                # Save updated cache
+                self._save_cache(self.nodes_cache, nodes_cached['data'])
+            
+            except requests.RequestException as e:
+                raise ConnectionError(f"Failed to fetch nodes data: {str(e)}")
+        
+        # Return requested nodes data
+        return {
+            str(node_id): nodes_cached['data'].get(str(node_id))
+            for node_id in node_ids
+        }
+
+    def get_ways_data(self, way_ids: List[int]) -> Tuple[Dict, Set[int]]:
+        """Get full data for a list of ways in a single query."""
+        # Load cache
+        ways_cached = self._load_cache(self.ways_cache, self.date_check) or {'data': {}}
+        nodes_cached = self._load_cache(self.nodes_cache, self.date_check) or {'data': {}}
+        
+        # Filter out already cached ways
+        ways_to_fetch = [
+            way_id for way_id in way_ids 
+            if str(way_id) not in ways_cached['data']
+        ]
+        
+        if ways_to_fetch:
+            # Build query for multiple ways
+            ways_str = ','.join(map(str, ways_to_fetch))
+            query = f"""
+            [out:json][timeout:300];
+            (
+                way(id:{ways_str});
+                >;  // Get all nodes for ways
+            );
+            out body;
+            way(id:{ways_str});
+            out center;
+            """
+
+            try:
+                response = requests.post(self.api_url, data={'data': query})
+                response.raise_for_status()
+                new_data = response.json()
+                
+                node_ids = []
+                # Process nodes and ways
+                for element in new_data['elements']:
+                    if element['type'] == 'node':
+                        node_id = str(element['id'])
+                        if node_id not in nodes_cached['data']:
+                            node_ids.append(element['id'])
+                    elif element['type'] == 'way':
+                        way_id = str(element['id'])
+                        ways_cached['data'][way_id] = element
+                if node_ids:
+                    self.get_nodes_data(node_ids)
+                
+                # Save updated caches
+                self._save_cache(self.ways_cache, ways_cached['data'])
+            
+            except requests.RequestException as e:
+                raise ConnectionError(f"Failed to fetch ways data: {str(e)}")
+        
+        # Return requested ways data and all node IDs
+        return {
+            str(way_id): ways_cached['data'].get(str(way_id))
+            for way_id in way_ids
+        }
+    
+    def get_relations_data(self, relation_ids: List[int]) -> Dict:
+        """Get data for a list of relations."""
+        relations_cached = self._load_cache(self.relations_cache, self.date_check) or {'data': {}}
+        ways_cached = self._load_cache(self.ways_cache, self.date_check) or {'data': {}}
+        nodes_cached = self._load_cache(self.nodes_cache, self.date_check) or {'data': {}}
+        
+        # Filter out already cached relations
+        relations_to_fetch = [
+            relation_id for relation_id in relation_ids 
+            if str(relation_id) not in relations_cached['data']
+        ]
+        
+        if relations_to_fetch:
+            # Build query for multiple relations
+            relations_str = ','.join(map(str, relations_to_fetch))
+            query = f"""
+            [out:json][timeout:300];
+            relation(id:{relations_str});
+            out center;
+            """
+
+            try:
+                response = requests.post(self.api_url, data={'data': query})
+                response.raise_for_status()
+                new_data = response.json()
+                
+                # Process relations
+                for element in new_data['elements']:
+                    if element['type'] == 'relation':
+                        relations_cached['data'][str(element['id'])] = element
+                        nodes_ids = []
+                        ways_ids = []
+                        for member in element['members']:
+                            if member['type'] == 'node':
+                                node_id = str(member['ref'])
+                                if node_id not in nodes_cached['data']:
+                                    nodes_ids.append(node_id)
+                            elif member['type'] == 'way':
+                                way_id = str(member['ref'])
+                                if way_id not in ways_cached['data']:
+                                    ways_ids.append(way_id)
+                        if nodes_ids:
+                            self.get_nodes_data(nodes_ids)
+                        if ways_ids:
+                            self.get_ways_data(ways_ids)
+
+                # Save updated cache
+                self._save_cache(self.relations_cache, relations_cached['data'])
+            
+            except requests.RequestException as e:
+                raise ConnectionError(f"Failed to fetch relations data: {str(e)}")
+        
+        # Return requested relations data
+        return {
+            str(relation_id): relations_cached['data'].get(str(relation_id))
+            for relation_id in relation_ids
+        }
+
+    def get_country_data(self, country: str, force_refresh: bool = False) -> Dict:
+        """Get both plants and generators data for a specific country."""
+        plants_data = self.get_plants_data(country, force_refresh)
+        generators_data = self.get_generators_data(country, force_refresh)
+        
+        # Collect all way IDs from both datasets
+        way_ids = []
+        relation_ids = []
+        node_ids = []
+        for dataset in [plants_data, generators_data]:
+            way_ids.extend([
+                element['id'] 
+                for element in dataset['elements'] 
+                if element['type'] == 'way'
+            ])
+            relation_ids.extend([
+                element['id'] 
+                for element in dataset['elements'] 
+                if element['type'] == 'relation'
+            ])
+            node_ids.extend([
+                element['id'] 
+                for element in dataset['elements'] 
+                if element['type'] == 'node'
+            ])
+
+        self.get_nodes_data(node_ids)
+        self.get_ways_data(way_ids)
+        self.get_relations_data(relation_ids)
+        
+        return plants_data, generators_data
+
+    def get_countries_data(self, countries: Optional[List[str]] = None, force_refresh: bool = False) -> Dict:
+        """
+        Get data for multiple countries, using cache when available.
+        
+        Args:
+            countries: List of country names. If None, returns all cached data.
+            force_refresh: If True, forces download of data even if cached.
+            
+        Returns:
+            Dict containing plants_data, generators_data, and ways_data for requested countries.
+        """
+        all_plants_data = {}
+        all_generators_data = {}
+
+        # If no countries specified, return all cached data
+        if countries is None or len(countries) == 0:
+            # Load cached data
+            plants_cached = self._load_cache(self.plants_cache, self.date_check)
+            generators_cached = self._load_cache(self.generators_cache, self.date_check)
+
+            if not any([plants_cached, generators_cached]):
+                raise ValueError("No cached data available and no countries specified")
+
+            return {
+                'plants_data': plants_cached.get('data', {}) if plants_cached else {},
+                'generators_data': generators_cached.get('data', {}) if generators_cached else {},
+            }
+
+        # Process specified countries
+        for country in countries:
+            try:
+                country_code = self.get_country_code(country)
+                
+                # Get data for current country
+                plants_data, generators_data = self.get_country_data(
+                    country, 
+                    force_refresh=force_refresh
+                )
+
+                # Add to collected data
+                all_plants_data[country_code] = plants_data
+                all_generators_data[country_code] = generators_data
+
+            except Exception as e:
+                logger.warning(f"Error processing country {country}: {str(e)}")
+                continue
+
+        if not any([all_plants_data, all_generators_data]):
+            raise ValueError("No data could be retrieved for the specified countries")
+
+        return {
+            'plants_data': all_plants_data,
+            'generators_data': all_generators_data,
+        }
 
 @dataclass
 class PowerSource:
@@ -88,12 +425,10 @@ class Plant:
 
 class PowerPlantExtractor:
     def __init__(self, config_dir: Optional[Path] = None, custom_config: Optional[Dict[str, Any]] = None):
-        self.config_dir = config_dir or Path(__file__).parent.parent / "config"
+        self.config_dir = config_dir or Path(__file__).parent.parent / "package_data"
         self.load_configurations(custom_config=custom_config)
         self.api = OverpassAPI(custom_config=custom_config)
-        self.gen_out = {}
         self.clusters = {}
-        self.flow_analyzer = FlowAnalyzer()
 
     def get_cache(self):
         self.cache_ways = self.api._load_cache(self.api.ways_cache, date_check=self.date_check)
@@ -129,11 +464,9 @@ class PowerPlantExtractor:
             with open(self.config_dir / "config.yaml") as f:
                 self.config = yaml.safe_load(f)
 
-        setup_logging(self.config)
-
         self.sources = {
             name: PowerSource(**config)
-            for name, config in self.config['sources'].items()
+            for name, config in self.config['OSM']['sources'].items()
         }
 
         self.date_check = self.config.get('date_check', False)
@@ -146,7 +479,6 @@ class PowerPlantExtractor:
         self.csv_dir = Path(output_config.get('csv_dir', './output/csv'))
 
     def extract_plants(self, countries: List[str], force_refresh: bool = False) -> pd.DataFrame:
-        self.gen_out = {}
         self.clusters = {}
         all_plants = []
 
@@ -174,7 +506,6 @@ class PowerPlantExtractor:
         return df
 
     def _process_plants(self, plants_data: Dict, country: Optional[str] = None) -> Tuple[List[Plant], List[PlantPolygon]]:
-        self.current = "Plants"
         processed_plants = []
         plant_polygons = []
 
@@ -188,7 +519,6 @@ class PowerPlantExtractor:
         for element in plants_data['elements']:
             plant = self._process_plant_element(
                 element, 
-                plant_polygons=plant_polygons,
                 country=country,
                 case="plants"
             )
@@ -219,69 +549,12 @@ class PowerPlantExtractor:
 
         return processed_plants, plant_polygons
     
-    def _process_plant_element(self, element: Dict, plant_polygons: Optional[List[PlantPolygon]] = None, country: Optional[str] = None, case: Optional[str] = None) -> Optional[Plant]:
-        flow_path = ["Start Data Collection"]
-        
-        flow_path.append(f"Element Type: {element['type']}")
-        
-        power_type = element.get('tags', {}).get('power')
-        flow_path.append(f"Power Type: {power_type}")
-        if power_type == 'plant':
-            flow_path.append("Process as Plant")
-            
-            capacity, source = self._get_plant_capacity(element)
-            if capacity is not None:
-                flow_path.append("Direct Capacity Available")
-            else:
-                flow_path.append("No Direct Capacity")
-                
-                if self.enable_estimation:
-                    source_type = element.get('tags', {}).get('plant:source')
-                    if source_type in self.sources:
-                        if self.sources[source_type].estimation:
-                            flow_path.append("Capacity Estimation Applied")
-                        else:
-                            flow_path.append("No Estimation Method Available")
-                    else:
-                        flow_path.append("Source Type Not Configured")
-                else:
-                    flow_path.append("Estimation Disabled")
-                    
-        elif power_type == 'generator':
-            flow_path.append("Process as Generator")
-            
-            coords = self._get_element_coordinates(element)
-            if coords and plant_polygons:
-                point = Point(coords['lon'], coords['lat'])
-                inside_plant = False
-                for plantpolygon in plant_polygons:
-                    if plantpolygon.obj.contains(point):
-                        inside_plant = True
-                        flow_path.append("Inside Plant Polygon")
-                        break
-                if not inside_plant:
-                    flow_path.append("Outside Plant Polygon")
-                    
-                    source_type = element.get('tags', {}).get('generator:source')
-                    if source_type:
-                        flow_path.append("Has Source Type")
-                        if source_type in self.sources:
-                            flow_path.append("Source in Config")
-                            if self.enable_clustering and self.sources[source_type].clustering:
-                                flow_path.append("Clustering Enabled")
-                            else:
-                                flow_path.append("Clustering Disabled")
-                        else:
-                            flow_path.append("Source not in Config")
-                    else:
-                        flow_path.append("No Source Type")
-        
-        self.flow_analyzer.add_flow(" -> ".join(flow_path))
+    def _process_plant_element(self, element: Dict, country: Optional[str] = None, case: Optional[str] = None) -> Optional[Plant]:
         
         plant_data = self._extract_plant_data(element, country=country, case=case)
         if not plant_data:
             return None
-        
+    
         return Plant(**plant_data) if self._validate_plant_data(plant_data) else None
     
     def _create_way_polygon(self, element: Dict) -> Optional[PlantPolygon]:
@@ -450,7 +723,6 @@ class PowerPlantExtractor:
         return None
 
     def _process_generators(self, generators_data: Dict, plant_polygons: List[PlantPolygon], country: Optional[str] = None) -> List[Plant]:
-        self.current = "Generators"
         generators_by_type = self._group_generators_by_type(generators_data['elements'])
         processed_plants = []
 
@@ -460,7 +732,6 @@ class PowerPlantExtractor:
                 for generator in filtered_generators:
                     plant = self._process_plant_element(
                         generator,
-                        plant_polygons=plant_polygons,
                         country=country,
                         case="excluded_source"
                     )
@@ -491,7 +762,6 @@ class PowerPlantExtractor:
                         for generator in units:
                             plant = self._process_plant_element(
                                 generator,
-                                plant_polygons=plant_polygons,
                                 country=country,
                                 case="noise_point"
                             )
@@ -524,7 +794,6 @@ class PowerPlantExtractor:
                     for generator in filtered_generators:
                         plant = self._process_plant_element(
                             generator,
-                            plant_polygons=plant_polygons,
                             country=country,
                             case="individual_generator"
                         )
@@ -586,7 +855,7 @@ class PowerPlantExtractor:
             if generator['type'] == 'way':
                 if generator['id'] in self.ways_in_relations:
                     logger.debug(f"Generator '{generator['id']}' is in a relation '{self.ways_rel_mapping[generator['id']]}'. Skipping...")
-                    self.gen_out[generator['id']] = [plantpolygon.id, generator]
+
                     continue
             coords = self._get_element_coordinates(generator)
             continue_flag = False
@@ -596,7 +865,6 @@ class PowerPlantExtractor:
                     if plantpolygon.obj.contains(point):
                         logger.debug(f"Generator {generator['id']} is in the plant polygon {plantpolygon.type}/{plantpolygon.id}. Skipping...")
                         continue_flag = True
-                        self.gen_out[generator['id']] = [plantpolygon.id, generator]
                         break
             else:
                 continue_flag = True
@@ -659,6 +927,23 @@ class PowerPlantExtractor:
         
         return data
     
+    def _combine_cluster_data(self, country: str = 'all', source_type: str = 'all') -> pd.DataFrame:
+        combined_data = []
+
+        for c, country_data in self.clusters.items():
+            if country != 'all' and c != country:
+                continue
+            for s, source_data in country_data.items():
+                if source_type != 'all' and s != source_type:
+                    continue
+                df = pd.DataFrame(source_data)
+                df['country'] = c
+                df['source'] = s
+                df['text'] = df.apply(lambda row: f"Country: {c}<br>Source: {s}<br>ID: {row['id']}<br>Capacity: {row['capacity']:.2f} MW", axis=1)
+                combined_data.append(df)
+
+        return pd.concat(combined_data, ignore_index=True) if combined_data else pd.DataFrame()
+    
     def plot_clusters(self, country: str = 'all', source_type: str = 'all', show: bool = False):
         try:
             import plotly
@@ -706,23 +991,6 @@ class PowerPlantExtractor:
             fig.show(config={'scrollZoom': True})
         
         return fig
-
-    def _combine_cluster_data(self, country: str = 'all', source_type: str = 'all') -> pd.DataFrame:
-        combined_data = []
-
-        for c, country_data in self.clusters.items():
-            if country != 'all' and c != country:
-                continue
-            for s, source_data in country_data.items():
-                if source_type != 'all' and s != source_type:
-                    continue
-                df = pd.DataFrame(source_data)
-                df['country'] = c
-                df['source'] = s
-                df['text'] = df.apply(lambda row: f"Country: {c}<br>Source: {s}<br>ID: {row['id']}<br>Capacity: {row['capacity']:.2f} MW", axis=1)
-                combined_data.append(df)
-
-        return pd.concat(combined_data, ignore_index=True) if combined_data else pd.DataFrame()
     
     def summary(self, df: pd.DataFrame = None) -> pd.DataFrame:
         if df is None:
@@ -739,32 +1007,65 @@ class PowerPlantExtractor:
         summary = summary.sort_values('Total', ascending=False)
         return summary
     
-    def get_flow_summary(self) -> pd.DataFrame:
-        return self.flow_analyzer.get_summary()
 
-    def plot_flow_sankey(self, title: str = "Data Processing Flow"):
-        return self.flow_analyzer.plot_sankey(title)
+def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    R = 6371000
 
-    def plot_flow_sunburst(self, title: str = "Data Processing Flow Distribution"):
-        return self.flow_analyzer.plot_sunburst(title)
+    lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
+
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
+    c = 2 * atan2(sqrt(a), sqrt(1-a))
+    distance = R * c
+
+    return distance
+
+def calculate_area(coordinates: List[Dict[str, float]]) -> float:
+    if len(coordinates) < 3:
+        return 0.0
+
+    ref_lat = coordinates[0]['lat']
+    ref_lon = coordinates[0]['lon']
+
+    points = []
+    for coord in coordinates:
+        dy = haversine_distance(ref_lat, ref_lon, coord['lat'], ref_lon)
+        dx = haversine_distance(ref_lat, ref_lon, ref_lat, coord['lon'])
+
+        if coord['lat'] < ref_lat:
+            dy = -dy
+        if coord['lon'] < ref_lon:
+            dx = -dx
+
+        points.append((dx, dy))
+
+    area = 0.0
+    n = len(points)
+    for i in range(n):
+        j = (i + 1) % n
+        area += points[i][0] * points[j][1]
+        area -= points[j][0] * points[i][1]
+    area = abs(area) / 2.0
+
+    return area
+
+def calculate_polygon_centroid(coordinates: List[Dict[str, float]]) -> Dict[str, float]:
+    if not coordinates:
+        return None
+
+    lat_sum = sum(coord['lat'] for coord in coordinates)
+    lon_sum = sum(coord['lon'] for coord in coordinates)
+    n = len(coordinates)
+
+    return {
+        'lat': lat_sum / n,
+        'lon': lon_sum / n
+    }
+
+
     
-    def save_csv(self, df: Optional[pd.DataFrame] = None, filename: str = "osm_power_plants.csv"):
-        """Save DataFrame to CSV file in the configured directory."""
-        if df is None:
-            if not hasattr(self, 'last_extracted_df'):
-                raise ValueError("No data available. Please run extract_plants() first or provide a dataframe.")
-            df = self.last_extracted_df
-        
-        # Create the directory only when actually saving data
-        self.csv_dir.mkdir(parents=True, exist_ok=True)
-        
-        file_path = self.csv_dir / filename
-        df.to_csv(file_path, index=False)
-        logger.info(f"CSV file saved: {file_path}")
-        
-
 def main():
-    extractor = PowerPlantExtractor()
     pass
 
 if __name__ == "__main__":
