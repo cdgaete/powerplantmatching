@@ -2164,38 +2164,34 @@ def OSM(raw=False, update=False, config=None):
         Power plant data from OpenStreetMap formatted according to 
         powerplantmatching standards
     """
+    from .core import _data_in
+    
     if config is None:
         config = get_config()
     else:
         config = get_config(**config)
 
-    # Get stored csv osm data. Never update (download from url only if needed), if the file does not exist
-    fn = get_raw_file("OSM", update=False, config=config, skip_retrieve=False)
+    fn = _data_in(config.get("OSM", {}).get("fn", "osm_data.csv"))
     
-    # Get target countries from config
     countries = config['target_countries']
     
-    # Check if we need to update the data
     update_needed = update
     
-    # If the file exists and no update is needed, check if all countries are present
     if not update_needed and os.path.exists(fn):
         df = pd.read_csv(fn)
         update_needed = not set(countries).issubset(df['country'].unique())
     
-    if update_needed:
+    if update_needed or not os.path.exists(fn):
         extractor = PowerPlantExtractor(custom_config=config)
         df = extractor.extract_plants(countries, force_refresh=update)
-        # Check if the file already exists
         if os.path.exists(fn):
-            # replace data of requested countries while other countries are kept
             full_df = pd.read_csv(fn)
             df = pd.concat([df, full_df[~full_df['country'].isin(countries)]], ignore_index=True)
         df.to_csv(fn, index=False)
     else:
         full_df = pd.read_csv(fn)
         df = full_df[full_df['country'].isin(countries)]
-        
+
     if raw:
         return df
 

@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 import pycountry
 import requests
+from shapely.errors import GEOSException
 from shapely.geometry import Point, Polygon
 from shapely.ops import unary_union
 from sklearn.cluster import DBSCAN
@@ -95,6 +96,7 @@ class OverpassAPI:
         """
 
         try:
+            logger.warning(f"    downloading plants data for {country}")
             response = requests.post(self.api_url, data={'data': query})
             response.raise_for_status()
             data = response.json()
@@ -131,6 +133,7 @@ class OverpassAPI:
         """
 
         try:
+            logger.warning(f"    downloading generators data for {country}")
             response = requests.post(self.api_url, data={'data': query})
             response.raise_for_status()
             data = response.json()
@@ -179,11 +182,7 @@ class OverpassAPI:
             except requests.RequestException as e:
                 raise ConnectionError(f"Failed to fetch nodes data: {str(e)}")
         
-        # Return requested nodes data
-        return {
-            str(node_id): nodes_cached['data'].get(str(node_id))
-            for node_id in node_ids
-        }
+        return None
 
     def get_ways_data(self, way_ids: List[int]) -> Tuple[Dict, Set[int]]:
         """Get full data for a list of ways in a single query."""
@@ -235,11 +234,7 @@ class OverpassAPI:
             except requests.RequestException as e:
                 raise ConnectionError(f"Failed to fetch ways data: {str(e)}")
         
-        # Return requested ways data and all node IDs
-        return {
-            str(way_id): ways_cached['data'].get(str(way_id))
-            for way_id in way_ids
-        }
+        return None
     
     def get_relations_data(self, relation_ids: List[int]) -> Dict:
         """Get data for a list of relations."""
@@ -293,16 +288,17 @@ class OverpassAPI:
             except requests.RequestException as e:
                 raise ConnectionError(f"Failed to fetch relations data: {str(e)}")
         
-        # Return requested relations data
-        return {
-            str(relation_id): relations_cached['data'].get(str(relation_id))
-            for relation_id in relation_ids
-        }
+        return None
 
-    def get_country_data(self, country: str, force_refresh: bool = False) -> Dict:
+    def get_country_data(self, country: str, force_refresh: bool = False, plants_only: bool = False) -> Dict:
         """Get both plants and generators data for a specific country."""
+        logger.warning(f"Fetching data for {country}")
         plants_data = self.get_plants_data(country, force_refresh)
-        generators_data = self.get_generators_data(country, force_refresh)
+        
+        if not plants_only:
+            generators_data = self.get_generators_data(country, force_refresh)
+        else:
+            generators_data = {'elements': []}
         
         # Collect all way IDs from both datasets
         way_ids = []
@@ -459,31 +455,41 @@ class PowerPlantExtractor:
         except Exception as e:
             raise ValueError(f"Error querying element {element_id}: {str(e)}")
 
-    def extract_plants(self, countries: List[str], force_refresh: bool = False) -> pd.DataFrame:
+    def extract_plants(self, countries: List[str], force_refresh: bool = False, plants_only: Optional[bool] = None) -> pd.DataFrame:
         self.clusters = {}
         all_plants = []
 
         for country in countries:
             plants_data, generators_data = self.api.get_country_data(
                 country,
-                force_refresh=force_refresh if force_refresh else self.config['OSM']['force_refresh']
+                force_refresh=force_refresh if force_refresh else self.config['OSM'].get('force_refresh', False),
+                plants_only=plants_only if plants_only is not None else self.config['OSM'].get('plants_only', False)
             )
 
             self.get_cache()
 
             country_obj = pycountry.countries.lookup(country)
             
+            if country_obj is None:
+                logger.warning(f"Invalid country name: {country}")
+                continue
+            
             if country_obj.name != country:
-                logger.warning(f"Country name mismatch: {country_obj.name} != {country}")
+                logger.warning(f"Country name mismatch: {country_obj.name} != {country}. Using {country} instead.")
     
             primary_plants, plant_polygons = self._process_plants(plants_data, country=country)
 
-            secondary_plants = self._process_generators(generators_data, plant_polygons, country=country)
+            if not plants_only:
+                secondary_plants = self._process_generators(generators_data, plant_polygons, country=country)
+            else:
+                secondary_plants = []
 
             country_plants = primary_plants + secondary_plants
             all_plants.extend(country_plants)
 
         df = pd.DataFrame([plant.to_dict() for plant in all_plants])
+        
+        df = df.drop_duplicates(subset='name', keep='first')
         
         self.last_extracted_df = df
 
@@ -580,11 +586,13 @@ class PowerPlantExtractor:
                     
             if len(way_polygons) == 1:
                 return PlantPolygon(id=str(element['id']), type=element['type'], obj=way_polygons[0])
-            
-            joint_polygon = unary_union(way_polygons)
-            if joint_polygon.is_valid:
-                plantpolygon = PlantPolygon(id=str(element['id']), type=element['type'], obj=joint_polygon)
-                return plantpolygon
+            try:
+                joint_polygon = unary_union(way_polygons)
+                if joint_polygon.is_valid:
+                    plantpolygon = PlantPolygon(id=str(element['id']), type=element['type'], obj=joint_polygon)
+                    return plantpolygon
+            except GEOSException as e:
+                logger.debug(f"Failed to create polygon for element {element['id']} of type {element['type']}: {str(e)}")
         return None
     
     def _extract_plant_data(self, element: Dict, country: Optional[str] = None, case: Optional[str] = None) -> Optional[Dict]:
@@ -780,18 +788,6 @@ class PowerPlantExtractor:
                         )
 
                         processed_plants.append(plant)
-                # else:
-                    # If clustering is disabled, process each generator individually
-                    # for generator in filtered_generators:
-                    #     plant = self._process_plant_element(
-                    #         generator,
-                    #         country=country,
-                    #         case="individual_generator"
-                    #     )
-                    #     if plant:
-                    #         processed_plants.append(plant)
-                    #     else:
-                    #         logger.debug(f"Failed to extract data for generator {generator['id']}")
 
         return processed_plants
 

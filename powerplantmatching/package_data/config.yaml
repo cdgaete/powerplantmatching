@@ -204,14 +204,14 @@ GHPT:
   url: https://tubcloud.tu-berlin.de/s/sEztyBLdJS5sNHY/download/Global-Hydropower-Tracker-April-2024.xlsx
 OSM:
   reliability_score: 3
-  net_capacity: true
-  api_url: https://overpass-api.de/api/interpreter  # Default Overpass API endpoint
+  net_capacity: false
+  api_url: https://overpass-api.de/api/interpreter  # Default Overpass API endpoint https://overpass.private.coffee/api/interpreter   https://overpass-api.de/api/interpreter
   fn: osm_data.csv # Filename for saving OSM data
-  url: https://raw.githubusercontent.com/pypsa-meets-earth/ppm-data-backup/main/osm_data.csv # URL for downloading OSM data
 
   # Global configuration
   date_check: false
   force_refresh: false
+  plants_only: false
   enable_estimation: false
   enable_clustering: false
 
