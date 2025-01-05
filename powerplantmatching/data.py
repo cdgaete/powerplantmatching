@@ -2170,7 +2170,7 @@ def OSM(raw=False, update=False, config=None):
         config = get_config(**config)
 
     # Get stored csv osm data. Never update (download from url only if needed), if the file does not exist
-    fn = get_raw_file("OSM", update=False, config=config)
+    fn = get_raw_file("OSM", update=False, config=config, skip_retrieve=False)
     
     # Get target countries from config
     countries = config['target_countries']
@@ -2186,9 +2186,11 @@ def OSM(raw=False, update=False, config=None):
     if update_needed:
         extractor = PowerPlantExtractor(custom_config=config)
         df = extractor.extract_plants(countries, force_refresh=update)
-        # replace data of requested countries while other countries are kept
-        full_df = pd.read_csv(fn)
-        df = pd.concat([df, full_df[~full_df['country'].isin(countries)]], ignore_index=True)
+        # Check if the file already exists
+        if os.path.exists(fn):
+            # replace data of requested countries while other countries are kept
+            full_df = pd.read_csv(fn)
+            df = pd.concat([df, full_df[~full_df['country'].isin(countries)]], ignore_index=True)
         df.to_csv(fn, index=False)
     else:
         full_df = pd.read_csv(fn)
@@ -2237,7 +2239,8 @@ def OSM(raw=False, update=False, config=None):
         'francis_turbine': 'Reservoir',
         'pelton_turbine': 'Reservoir',
     }
-
+    
+    df = df.copy()
     df['Fueltype'] = df['source'].map(fueltype_map)
     df['Technology'] = df['technology'].map(technology_map)
 

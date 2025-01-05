@@ -472,10 +472,13 @@ class PowerPlantExtractor:
             self.get_cache()
 
             country_obj = pycountry.countries.lookup(country)
+            
+            if country_obj.name != country:
+                logger.warning(f"Country name mismatch: {country_obj.name} != {country}")
     
-            primary_plants, plant_polygons = self._process_plants(plants_data, country=country_obj.name)
+            primary_plants, plant_polygons = self._process_plants(plants_data, country=country)
 
-            secondary_plants = self._process_generators(generators_data, plant_polygons, country=country_obj.name)
+            secondary_plants = self._process_generators(generators_data, plant_polygons, country=country)
 
             country_plants = primary_plants + secondary_plants
             all_plants.extend(country_plants)
@@ -777,18 +780,18 @@ class PowerPlantExtractor:
                         )
 
                         processed_plants.append(plant)
-                else:
+                # else:
                     # If clustering is disabled, process each generator individually
-                    for generator in filtered_generators:
-                        plant = self._process_plant_element(
-                            generator,
-                            country=country,
-                            case="individual_generator"
-                        )
-                        if plant:
-                            processed_plants.append(plant)
-                        else:
-                            logger.debug(f"Failed to extract data for generator {generator['id']}")
+                    # for generator in filtered_generators:
+                    #     plant = self._process_plant_element(
+                    #         generator,
+                    #         country=country,
+                    #         case="individual_generator"
+                    #     )
+                    #     if plant:
+                    #         processed_plants.append(plant)
+                    #     else:
+                    #         logger.debug(f"Failed to extract data for generator {generator['id']}")
 
         return processed_plants
 
