@@ -208,14 +208,13 @@ OSM:
   api_url: https://overpass-api.de/api/interpreter  # Default Overpass API endpoint https://overpass.private.coffee/api/interpreter   https://overpass-api.de/api/interpreter
   fn: osm_data.csv # Filename for saving OSM data
 
-  # Global configuration
-  date_check: false
+  # OSM Global configurations
   force_refresh: false
   plants_only: false
   enable_estimation: false
   enable_clustering: false
 
-  # Power source configurations
+  # Generators clustering or estimation
   sources:
     solar:
       clustering:
@@ -297,28 +296,7 @@ target_countries:
   - Germany
   - Greece
   - Hungary
-  - Ireland
-  - Italy
-  - Kosovo
-  - Latvia
-  - Lithuania
-  - Luxembourg
-  - North Macedonia
-  - Moldova
-  - Montenegro
-  - Netherlands
-  - Norway
-  - Poland
-  - Portugal
-  - Romania
-  - Serbia
-  - Slovakia
-  - Slovenia
-  - Spain
-  - Sweden
-  - Switzerland
-  - United Kingdom
-  - Ukraine
+
 target_fueltypes:
   # Provide a mapping of the keys to a list or a regex expression which are used for parsing.
   # A list will be converted to a regex expression matching all words (case-insensitive)
