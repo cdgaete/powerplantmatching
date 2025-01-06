@@ -296,6 +296,28 @@ target_countries:
   - Germany
   - Greece
   - Hungary
+  - Ireland
+  - Italy
+  - Kosovo
+  - Latvia
+  - Lithuania
+  - Luxembourg
+  - North Macedonia
+  - Moldova
+  - Montenegro
+  - Netherlands
+  - Norway
+  - Poland
+  - Portugal
+  - Romania
+  - Serbia
+  - Slovakia
+  - Slovenia
+  - Spain
+  - Sweden
+  - Switzerland
+  - United Kingdom
+  - Ukraine
 
 target_fueltypes:
   # Provide a mapping of the keys to a list or a regex expression which are used for parsing.
