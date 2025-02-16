@@ -70,6 +70,47 @@ The ``api_url`` specifies the Overpass API endpoint for querying OSM data, while
 
 The ``sources`` section provides configuration options for different power source types, such as solar and wind. Each source type can have its own clustering and estimation settings.
 
+Source Configuration
+^^^^^^^^^^^^^^^^^^^^
+
+The ``sources`` section in the configuration allows you to specify settings for different types of power plants. This is particularly useful for customizing the extraction and processing of specific energy sources. Let's break down the structure:
+
+.. code-block:: yaml
+
+    sources:
+      solar:
+        clustering:
+          method: dbscan
+          to_radians: false
+          eps: 0.003
+          min_samples: 2
+        estimation:
+          method: area_based
+          efficiency: 150
+      wind:
+        clustering:
+          method: dbscan
+          to_radians: false
+          eps: 0.009
+          min_samples: 2
+        estimation:
+          method: default_value
+          default_capacity: 2000
+
+For each source (e.g., solar, wind), you can define:
+
+1. **Clustering settings**: Used to group nearby generators into single power plant entities.
+   - ``method``: The clustering algorithm (currently supports DBSCAN).
+   - ``to_radians``: Whether to convert coordinates to radians before clustering.
+   - ``eps``: The maximum distance between two samples for them to be considered as in the same neighborhood.
+   - ``min_samples``: The number of samples in a neighborhood for a point to be considered as a core point.
+
+2. **Estimation settings**: Used to estimate capacity when it's not provided in the OSM data.
+   - ``method``: The estimation method (e.g., 'area_based' for solar, 'default_value' for wind).
+   - ``efficiency`` or ``default_capacity``: Parameters specific to the estimation method.
+
+This configuration allows for fine-tuned control over how different types of power plants are processed, accommodating the unique characteristics of each energy source.
+
 Default Configuration: plants_only Mode
 ---------------------------------------
 
@@ -145,7 +186,91 @@ Here's a basic example of how to use the OSM integration in powerplantmatching:
     # Match the combined data
     data = pm.powerplants(update=True, config_update=config)
 
+Line-by-line explanation:
+
+1. Import the powerplantmatching library.
+2. Get the default configuration.
+3. Set the main query to an empty string (no additional filtering).
+4. Specify the target countries for data extraction.
+5. Set `plants_only` to True to focus on power plants and exclude individual generators.
+6. Specify the filename for saving the extracted OSM data.
+7. Set the reliability score for the OSM data source.
+8. Specify the matching sources to be used (OSM and GEM in this case).
+9. Extract OSM data using the specified configuration.
+10. Print the first few rows of the extracted data to inspect it.
+11-13. Create an interactive map of the power plants using plotly.
+14. Perform the matching process with the updated configuration, including OSM data.
+
 This example demonstrates how to extract OSM data for specific countries, view and summarize the data, and then integrate it with other data sources in powerplantmatching.
+
+Additional Features and Functionalities
+---------------------------------------
+
+1. Customizing clustering settings:
+
+.. code-block:: python
+
+    config["OSM"]["enable_clustering"] = True
+    config["OSM"]["sources"]["solar"]["clustering"] = {
+        "method": "dbscan",
+        "eps": 0.005,
+        "min_samples": 3
+    }
+    osm_data = pm.data.OSM(update=True, config=config)
+
+This snippet enables clustering for solar power plants and customizes the DBSCAN parameters.
+
+2. Enabling capacity estimation:
+
+.. code-block:: python
+
+    config["OSM"]["enable_estimation"] = True
+    config["OSM"]["sources"]["wind"]["estimation"] = {
+        "method": "default_value",
+        "default_capacity": 2500  # in kW
+    }
+    osm_data = pm.data.OSM(update=True, config=config)
+
+This enables capacity estimation for wind power plants using a default value.
+
+3. Visualizing clusters (if clustering is enabled):
+
+.. code-block:: python
+
+    extractor = pm.osm.PowerPlantExtractor(custom_config=config)
+    extractor.extract_plants(["Uruguay", "Paraguay"])
+    cluster_plot = extractor.plot_clusters(country="Uruguay", source_type="solar", show=True)
+
+This visualizes the clusters of solar power plants in Uruguay.
+
+4. Combining OSM data with other sources:
+
+.. code-block:: python
+
+    config["matching_sources"] = {"OSM": None, "OPSD": None, "GEM": None}
+    combined_data = pm.powerplants(update=True, config_update=config)
+    print(combined_data.head())
+
+This combines OSM data with OPSD and GEM data sources in the matching process.
+
+5. Exporting the data:
+
+.. code-block:: python
+
+    osm_data.to_csv("osm_power_plants.csv", index=False)
+
+This exports the extracted OSM data to a CSV file.
+
+Benefits of OSM Integration
+---------------------------
+
+1. **Comprehensive Data Source**: OSM provides a vast, community-driven dataset of power plants worldwide.
+2. **Regular Updates**: OSM data is frequently updated by contributors, ensuring relatively current information.
+3. **Flexible Extraction**: Users can extract data for specific countries or regions as needed.
+4. **Customizable Processing**: The configuration options allow users to tailor the data extraction and processing to their specific needs.
+5. **Integration with Existing Sources**: OSM data can be seamlessly combined with other power plant databases in powerplantmatching.
+6. **Improved Coverage**: OSM can provide information on power plants that might be missing from other sources, especially for smaller or newer installations.
+7. **Open Data**: OSM is an open data source, which aligns well with open science principles and reproducibility.
 
 Conclusion
 ----------
