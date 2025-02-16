@@ -1,8 +1,30 @@
 Release Notes
 ==============
 
-.. Upcoming Version
-.. ----------------
+Upcoming Version
+----------------
+
+**New Features**
+
+* OpenStreetMap Integration for PowerPlantMatching
+
+  Key Features
+
+  1. OSM Data Extraction: Retrieve power plant data from OpenStreetMap for specific countries or regions.
+  2. Flexible Configuration: Customize data extraction and processing through various configuration options.
+  3. Power Plant Focus: Option to focus solely on power plant data, excluding individual generators.
+  4. Capacity Estimation: Estimate power plant capacities based on area or default values when not provided.
+  5. Clustering: Group nearby generators into single power plant entities (optional).
+  6. Caching Mechanism: Efficient data storage and retrieval using JSON cache files.
+  7. Integration with PowerPlantMatching: Seamlessly use OSM data alongside other data sources in the tool.
+
+  Implementation Details
+
+  - Added new `osm.py` module with `OverpassAPI` and `PowerPlantExtractor` classes for handling OSM data.
+  - Updated `data.py` to include OSM data source.
+  - Modified `config.yaml` to include OSM-specific configurations.
+  - Added new dependencies: scikit-learn, plotly, cartopy.
+  - Updated documentation to include OSM integration details.
 
 
 Version 0.6.0 (18.09.2024)
