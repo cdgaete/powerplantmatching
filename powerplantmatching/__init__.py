@@ -35,7 +35,6 @@ __copyright__ = "Copyright 2017-2024 Technical University of Berlin"
 
 # e.g. "0.5.15" or "0.5.15.post27+g761e814.d20240722" (if installed from master branch)
 __version__ = version("powerplantmatching")
-__version__ = "0.6.0"
 # e.g. "0.5.15", without the post part (if it exists, otherwise the same as __version__)
 latest_release = __version__.split(".post")[0]
 
