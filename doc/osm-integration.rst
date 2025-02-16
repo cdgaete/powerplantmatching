@@ -145,7 +145,7 @@ Here's a basic example of how to use the OSM integration in powerplantmatching:
     # Match the combined data
     data = pm.powerplants(update=True, config_update=config)
 
-This example demonstrates how to extract OSM data for a specific country, view and summarize the data, and then integrate it with other data sources in powerplantmatching.
+This example demonstrates how to extract OSM data for specific countries, view and summarize the data, and then integrate it with other data sources in powerplantmatching.
 
 Conclusion
 ----------

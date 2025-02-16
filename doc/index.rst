@@ -170,7 +170,7 @@ powerplantmatching is released as free software under the
    basics
    example.ipynb
    custom-config
-   osm_integration
+   osm-integration
 
 .. toctree::
    :hidden:
