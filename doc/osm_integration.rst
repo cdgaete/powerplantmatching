@@ -121,21 +121,29 @@ Here's a basic example of how to use the OSM integration in powerplantmatching:
 
     import powerplantmatching as pm
 
+    # Setting OSM configurations
+    config = pm.get_config()
+
+    config["main_query"] = ""
+    config["target_countries"] = ["Uruguay", "Paraguay"]
+    config["OSM"]["plants_only"] = True
+    config["OSM"]["fn"] = "osm_plants.csv"
+    config["OSM"]["reliability_score"] = 6
+    config["matching_sources"] = {"OSM": None, "GEM": None}   
+
     # Extract OSM data for a specific country
-    osm_data = pm.data.OSM(country=['Portugal', 'Spain'])
+    osm_data = pm.data.OSM(update=False, config=config)
 
     # View the extracted data
     print(osm_data.head())
 
-    # Get a summary of the extracted data
-    summary = pm.utils.lookup(osm_data)
-    print(summary)
-
-    # Combine with other data sources
-    combined_data = pm.data.OPSD().powerplant.combine([osm_data])
+    # Plot Power Plants
+    fig = osm_data.powerplant.plotly_map()
+    fig.update_layout(height=800, width=1200)
+    fig.show(config={'scrollZoom': True})
 
     # Match the combined data
-    matched_data = pm.matching.match(combined_data)
+    data = pm.powerplants(update=True, config_update=config)
 
 This example demonstrates how to extract OSM data for a specific country, view and summarize the data, and then integrate it with other data sources in powerplantmatching.
 
