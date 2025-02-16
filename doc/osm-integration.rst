@@ -188,18 +188,18 @@ Here's a basic example of how to use the OSM integration in powerplantmatching:
 
 Line-by-line explanation:
 
-1. Import the powerplantmatching library.
-2. Get the default configuration.
-3. Set the main query to an empty string (no additional filtering).
-4. Specify the target countries for data extraction.
-5. Set `plants_only` to True to focus on power plants and exclude individual generators.
-6. Specify the filename for saving the extracted OSM data.
-7. Set the reliability score for the OSM data source.
-8. Specify the matching sources to be used (OSM and GEM in this case).
-9. Extract OSM data using the specified configuration.
-10. Print the first few rows of the extracted data to inspect it.
-11-13. Create an interactive map of the power plants using plotly.
-14. Perform the matching process with the updated configuration, including OSM data.
+- L1. Import the powerplantmatching library.
+- L2. Get the default configuration.
+- L3. Set the main query to an empty string (no additional filtering).
+- L4. Specify the target countries for data extraction.
+- L5. Set `plants_only` to True to focus on power plants and exclude individual generators.
+- L6. Specify the filename for saving the extracted OSM data.
+- L7. Set the reliability score for the OSM data source.
+- L8. Specify the matching sources to be used (OSM and GEM in this case).
+- L9. Extract OSM data using the specified configuration.
+- L10. Print the first few rows of the extracted data to inspect it.
+- L11-L13. Create an interactive map of the power plants using plotly.
+- L14. Perform the matching process with the updated configuration, including OSM data.
 
 This example demonstrates how to extract OSM data for specific countries, view and summarize the data, and then integrate it with other data sources in powerplantmatching.
 
